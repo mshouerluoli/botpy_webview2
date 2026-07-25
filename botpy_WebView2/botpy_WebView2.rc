@@ -1,0 +1,3 @@
+#include "resource.h"
+
+IDR_INDEX_HTML RCDATA "d:\\Vsyuanma\\botpy_WebView2\\botpy_WebView2\\ui\\index.html"

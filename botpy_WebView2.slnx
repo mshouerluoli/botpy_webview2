@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="botpy_WebView2/botpy_WebView2.vcxproj" Id="183217b8-56c6-4bcc-b209-4bb7688a978d" />
+</Solution>
