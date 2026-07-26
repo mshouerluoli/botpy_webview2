@@ -8,10 +8,10 @@ using json = nlohmann::json;
 
 static std::wstring utf8_to_wide(const std::string& utf8) {
     if (utf8.empty()) return L"";
-    int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, NULL, 0);
+    int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), NULL, 0);
     if (len <= 0) return L"";
     std::wstring result(len, 0);
-    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &result[0], len);
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &result[0], len);
     return result;
 }
 
@@ -109,6 +109,12 @@ LRESULT MainWindow::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     case WM_UIMESSAGE: {
         UiMessageData* data = (UiMessageData*)wParam;
         DoPostMessage(data);
+        delete data;
+        return 0;
+    }
+    case WM_UIPLUGINS: {
+        UiPluginsData* data = (UiPluginsData*)wParam;
+        DoPostPlugins(data);
         delete data;
         return 0;
     }
@@ -212,6 +218,12 @@ void MainWindow::PostMessageEvent(bool is_group, const std::string& content) {
     PostMessage(m_hwnd, WM_UIMESSAGE, (WPARAM)data, 0);
 }
 
+void MainWindow::PostPlugins(const std::string& json) {
+    UiPluginsData* data = new UiPluginsData();
+    data->json = json;
+    PostMessage(m_hwnd, WM_UIPLUGINS, (WPARAM)data, 0);
+}
+
 void MainWindow::DoPostLog(UiLogData* data) {
     if (!m_webview_ready || !m_webview) {
         m_log_cache.push_back(*data);
@@ -252,6 +264,12 @@ void MainWindow::DoPostMessage(UiMessageData* data) {
     j["isGroup"] = data->is_group;
     j["content"] = data->content;
     std::wstring s = utf8_to_wide(j.dump());
+    m_webview->PostWebMessageAsJson(s.c_str());
+}
+
+void MainWindow::DoPostPlugins(UiPluginsData* data) {
+    if (!m_webview_ready || !m_webview) return;
+    std::wstring s = utf8_to_wide(data->json);
     m_webview->PostWebMessageAsJson(s.c_str());
 }
 

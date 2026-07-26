@@ -11,6 +11,7 @@
 #define WM_UIINFO (WM_USER + 102)
 #define WM_UIMESSAGE (WM_USER + 103)
 #define WM_UIREADY (WM_USER + 104)
+#define WM_UIPLUGINS (WM_USER + 105)
 
 struct UiLogData {
     std::string level;
@@ -32,6 +33,10 @@ struct UiMessageData {
     std::string content;
 };
 
+struct UiPluginsData {
+    std::string json;
+};
+
 class MainWindow {
 public:
     MainWindow();
@@ -45,6 +50,8 @@ public:
     void PostStatus(const std::string& status, const std::string& text);
     void PostInfo(const std::string& id, const std::string& value);
     void PostMessageEvent(bool is_group, const std::string& content);
+    void PostPlugins(const std::string& json);
+    void DoPostPlugins(UiPluginsData* data);
 
     void SetCommandHandler(std::function<void(const std::string&)> handler) {
         m_command_handler = std::move(handler);

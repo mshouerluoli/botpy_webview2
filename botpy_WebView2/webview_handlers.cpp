@@ -9,10 +9,10 @@ using json = nlohmann::json;
 
 static std::wstring utf8_to_wide(const std::string& utf8) {
     if (utf8.empty()) return L"";
-    int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, NULL, 0);
+    int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), NULL, 0);
     if (len <= 0) return L"";
     std::wstring result(len, 0);
-    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &result[0], len);
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &result[0], len);
     return result;
 }
 
@@ -145,9 +145,9 @@ HRESULT STDMETHODCALLTYPE WebMessageHandler::Invoke(
     args->TryGetWebMessageAsString(&message);
     if (message) {
         std::wstring wmsg(message);
-        int len = WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), -1, NULL, 0, NULL, NULL);
+        int len = WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), (int)wmsg.size(), NULL, 0, NULL, NULL);
         std::string msg(len, 0);
-        WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), -1, &msg[0], len, NULL, NULL);
+        WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), (int)wmsg.size(), &msg[0], len, NULL, NULL);
         CoTaskMemFree(message);
         m_window->OnWebMessage(msg);
     }

@@ -149,6 +149,98 @@ body {
     color: #fff;
     border-bottom-color: #667eea;
 }
+.plugin-list {
+    padding: 16px;
+    overflow-y: auto;
+    flex: 1;
+}
+.plugin-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px;
+    background: #16213e;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    border: 1px solid #0f3460;
+}
+.plugin-info {
+    flex: 1;
+}
+.plugin-name {
+    font-size: 14px;
+    color: #e0e0e0;
+    margin-bottom: 4px;
+}
+.plugin-meta {
+    font-size: 12px;
+    color: #94a3b8;
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.plugin-meta span {
+    display: inline-flex;
+}
+.plugin-status {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-left: 8px;
+}
+.plugin-status.enabled {
+    background: #166534;
+    color: #86efac;
+}
+.plugin-status.disabled {
+    background: #7f1d1d;
+    color: #fca5a5;
+}
+.plugin-status.priority {
+    background: #0f3460;
+    color: #94a3b8;
+}
+.plugin-actions {
+    display: flex;
+    gap: 8px;
+}
+.btn {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s;
+}
+.btn-toggle {
+    background: #0f3460;
+    color: #e0e0e0;
+}
+.btn-toggle:hover {
+    background: #1e40af;
+}
+.btn-unload {
+    background: #7f1d1d;
+    color: #fca5a5;
+}
+.btn-unload:hover {
+    background: #991b1b;
+}
+.btn-reload-all {
+    padding: 10px 20px;
+    background: #667eea;
+    color: #fff;
+    margin: 16px;
+    font-size: 14px;
+}
+.btn-reload-all:hover {
+    background: #7c3aed;
+}
+.empty-state {
+    text-align: center;
+    padding: 40px;
+    color: #64748b;
+}
 </style>
 </head>
 <body>
@@ -184,9 +276,13 @@ body {
 
     <div class="content">
         <div class="tabs">
-            <div class="tab active">运行日志</div>
+            <div class="tab active" onclick="switchTab('log')">运行日志</div>
+            <div class="tab" onclick="switchTab('plugins')">插件管理</div>
         </div>
         <div class="log-container" id="logContainer">
+        </div>
+        <div class="plugin-list" id="pluginList" style="display:none;">
+            <div class="empty-state">加载插件列表中...</div>
         </div>
     </div>
 </div>
@@ -237,6 +333,8 @@ if (window.chrome && chrome.webview) {
                 setInfo(data.id, data.value);
             } else if (data.type === 'message') {
                 addLog('message', (data.isGroup ? '[群] ' : '[私聊] ') + data.content);
+            } else if (data.type === 'plugins') {
+                renderPlugins(data.plugins);
             }
         } catch(e) {
             addLog('info', String(event.data));
@@ -257,6 +355,88 @@ document.addEventListener('keydown', function(e) {
         e.preventDefault();
     }
 });
+
+function switchTab(tabName) {
+    const tabs = document.querySelectorAll('.tab');
+    tabs.forEach(t => t.classList.remove('active'));
+    
+    const logContainer = document.getElementById('logContainer');
+    const pluginList = document.getElementById('pluginList');
+    
+    if (tabName === 'log') {
+        tabs[0].classList.add('active');
+        logContainer.style.display = 'block';
+        pluginList.style.display = 'none';
+    } else if (tabName === 'plugins') {
+        tabs[1].classList.add('active');
+        logContainer.style.display = 'none';
+        pluginList.style.display = 'block';
+        sendCommand('get_plugins');
+    }
+}
+
+function sendCommand(cmd) {
+    if (window.chrome && chrome.webview) {
+        chrome.webview.postMessage(cmd);
+    }
+}
+
+function renderPlugins(plugins) {
+    const container = document.getElementById('pluginList');
+    container.innerHTML = '';
+    
+    if (!plugins || plugins.length === 0) {
+        container.innerHTML = '<div class="empty-state">暂无可管理的插件</div>';
+        return;
+    }
+    
+    plugins.forEach(plugin => {
+        const item = document.createElement('div');
+        item.className = 'plugin-item';
+        
+        const statusClass = plugin.enabled ? 'enabled' : 'disabled';
+        const statusText = plugin.enabled ? '已启用' : '已停用';
+        const toggleText = plugin.enabled ? '停用' : '启用';
+        
+        item.innerHTML = `
+            <div class="plugin-info">
+                <div class="plugin-name">${escapeHtml(plugin.name)}<span class="plugin-status ${statusClass}">${statusText}</span><span class="plugin-status priority">优先级: ${plugin.priority || 0}</span></div>
+                <div class="plugin-meta">
+                    <span>插件名: ${escapeHtml(plugin.display_name)}</span>
+                    ${plugin.author ? '<span>作者: ' + escapeHtml(plugin.author) + '</span>' : ''}
+                    ${plugin.description ? '<span>简述: ' + escapeHtml(plugin.description) + '</span>' : ''}
+                </div>
+            </div>
+            <div class="plugin-actions">
+                <button class="btn btn-toggle" onclick="togglePlugin('${escapeHtml(plugin.name)}')">${toggleText}</button>
+                <button class="btn btn-unload" onclick="unloadPlugin('${escapeHtml(plugin.name)}')">卸载</button>
+            </div>
+        `;
+        container.appendChild(item);
+    });
+    
+    const reloadBtn = document.createElement('button');
+    reloadBtn.className = 'btn btn-reload-all';
+    reloadBtn.textContent = '重新加载所有插件';
+    reloadBtn.onclick = reloadPlugins;
+    container.appendChild(reloadBtn);
+}
+
+function togglePlugin(name) {
+    sendCommand('toggle_plugin:' + name);
+}
+
+function unloadPlugin(name) {
+    if (confirm('确定要卸载插件 ' + name + ' 吗？')) {
+        sendCommand('unload_plugin:' + name);
+    }
+}
+
+function reloadPlugins() {
+    if (confirm('确定要重新加载所有插件吗？')) {
+        sendCommand('reload_plugins');
+    }
+}
 </script>
 </body>
 </html>

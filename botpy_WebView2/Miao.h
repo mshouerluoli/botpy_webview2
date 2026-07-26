@@ -7,8 +7,11 @@
 #include <thread>
 #include <functional>
 #include <chrono>
+#include <vector>
+#include <windows.h>
 
 #include "http/websocket_client.hpp"
+#include "plugin_api.h"
 
 struct Config {
     std::string appid;
@@ -29,6 +32,42 @@ struct Message {
 struct C2CMessage : Message {};
 struct GroupMessage : Message {};
 
+struct PluginInstance {
+    HMODULE handle;
+    std::string name;
+    std::string display_name;
+    std::string author;
+    std::string description;
+    bool enabled;
+    int priority;
+    PluginHandleMessageFunc handle_message;
+    PluginInitFunc init;
+    PluginShutdownFunc shutdown;
+    PluginGetNameFunc get_name;
+    PluginGetPriorityFunc get_priority;
+    const char* (*get_author)(void);
+    const char* (*get_description)(void);
+};
+
+class PluginManager {
+public:
+    PluginManager();
+    ~PluginManager();
+    
+    void load_plugins(const std::string& appid);
+    void unload_plugins();
+    void handle_message(const Message& message, bool is_group);
+    
+    std::vector<PluginInstance> get_plugins();
+    bool toggle_plugin(const std::string& name, bool enable);
+    bool unload_plugin(const std::string& name);
+    bool reload_plugins(const std::string& appid);
+    
+private:
+    std::vector<PluginInstance> m_plugins;
+    std::mutex m_mutex;
+};
+
 class MyClient {
 public:
     MyClient();
@@ -36,6 +75,18 @@ public:
     
     void run(const std::string& appid, const std::string& secret);
     void stop();
+    
+    bool send_c2c_message(const std::string& openid, const std::string& content, const std::string& msg_id = "") {
+        return _send_c2c_message(openid, content, msg_id);
+    }
+    bool send_group_message(const std::string& group_openid, const std::string& content, const std::string& msg_id = "") {
+        return _send_group_message(group_openid, content, msg_id);
+    }
+    
+    std::vector<PluginInstance> get_plugins() { return m_plugin_manager.get_plugins(); }
+    bool toggle_plugin(const std::string& name, bool enable) { return m_plugin_manager.toggle_plugin(name, enable); }
+    bool unload_plugin(const std::string& name) { return m_plugin_manager.unload_plugin(name); }
+    bool reload_plugins(const std::string& appid) { return m_plugin_manager.reload_plugins(appid); }
     
     std::function<void(const std::string& level, const std::string& msg)> on_log;
     std::function<void(const std::string& status, const std::string& text)> on_status;
@@ -83,6 +134,8 @@ private:
     int m_heartbeat_count;
     std::string m_nickname;
     std::atomic<uint64_t> m_last_message_ts;
+    
+    PluginManager m_plugin_manager;
 };
 
 class Intents {

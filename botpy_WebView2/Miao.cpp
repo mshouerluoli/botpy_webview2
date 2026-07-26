@@ -20,6 +20,21 @@ static void ui_log(const std::string& level, const std::string& msg) {
     }
 }
 
+extern "C" void plugin_log_wrapper(const char* level, const char* msg) {
+    ui_log(level ? level : "", msg ? msg : "");
+}
+
+static MyClient* g_client = nullptr;
+
+extern "C" int plugin_send_message_wrapper(const char* target_id, const char* content, int is_group) {
+    if (!g_client || !target_id || !content) return 0;
+    if (is_group) {
+        return g_client->send_group_message(target_id, content, "") ? 1 : 0;
+    } else {
+        return g_client->send_c2c_message(target_id, content, "") ? 1 : 0;
+    }
+}
+
 static std::string get_log_path() {
     wchar_t exe_path[MAX_PATH];
     GetModuleFileNameW(NULL, exe_path, MAX_PATH);
@@ -443,18 +458,7 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
 void MyClient::_handle_common_commands(const Message& message, bool message_isgroup) {
     m_message_count++;
     if (on_info) on_info("msgCount", std::to_string(m_message_count));
-
-    std::string reply = "Received: " + message.content;
-
-    if (message_isgroup) {
-        if (!message.group_openid.empty()) {
-            _send_group_message(message.group_openid, reply, message.id);
-        }
-    } else {
-        if (!message.openid.empty()) {
-            _send_c2c_message(message.openid, reply, message.id);
-        }
-    }
+    m_plugin_manager.handle_message(message, message_isgroup);
 }
 
 void MyClient::on_ready() {
@@ -475,6 +479,7 @@ void MyClient::on_group_at_message_create(const GroupMessage& message) {
 }
 
 void MyClient::run(const std::string& appid, const std::string& secret) {
+    g_client = this;
     m_appid = appid;
     m_secret = secret;
     m_running = true;
@@ -511,6 +516,8 @@ void MyClient::run(const std::string& appid, const std::string& secret) {
         return;
     }
 
+    m_plugin_manager.load_plugins(appid);
+
     if (m_heartbeat_thread.joinable()) {
         m_heartbeat_thread.detach();
     }
@@ -538,8 +545,323 @@ void MyClient::stop() {
         m_heartbeat_thread.detach();
     }
     
+    m_plugin_manager.unload_plugins();
+    
     log("info", "Client stopped");
     if (on_status) on_status("offline", "已断开");
+}
+
+PluginManager::PluginManager() {}
+
+PluginManager::~PluginManager() {
+    unload_plugins();
+}
+
+void PluginManager::load_plugins(const std::string& appid) {
+    unload_plugins();
+    
+    wchar_t exe_path[MAX_PATH];
+    GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    std::wstring exe_dir_w = exe_path;
+    size_t pos = exe_dir_w.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) {
+        exe_dir_w = exe_dir_w.substr(0, pos);
+    }
+    
+    std::wstring plugins_dir = exe_dir_w + L"\\plugins\\";
+    std::wstring plugin_data_dir = exe_dir_w + L"\\plugin_data\\";
+    
+    CreateDirectoryW(plugins_dir.c_str(), NULL);
+    CreateDirectoryW(plugin_data_dir.c_str(), NULL);
+    
+    WIN32_FIND_DATAW find_data;
+    HANDLE hFind = FindFirstFileW((plugins_dir + L"*.dll").c_str(), &find_data);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    
+    do {
+        if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            std::wstring dll_path = plugins_dir + find_data.cFileName;
+            std::string dll_name(find_data.cFileName, find_data.cFileName + wcslen(find_data.cFileName));
+            
+            try {
+                HMODULE hModule = LoadLibraryW(dll_path.c_str());
+                if (!hModule) {
+                    continue;
+                }
+                
+                PluginInstance inst;
+                inst.handle = hModule;
+                inst.name = dll_name;
+                inst.enabled = true;
+                inst.priority = 0;
+                
+                inst.init = (PluginInitFunc)GetProcAddress(hModule, "plugin_init");
+                inst.handle_message = (PluginHandleMessageFunc)GetProcAddress(hModule, "plugin_handle_message");
+                inst.shutdown = (PluginShutdownFunc)GetProcAddress(hModule, "plugin_shutdown");
+                inst.get_name = (PluginGetNameFunc)GetProcAddress(hModule, "plugin_get_name");
+                inst.get_priority = (PluginGetPriorityFunc)GetProcAddress(hModule, "plugin_get_priority");
+                inst.get_author = (const char* (*)(void))GetProcAddress(hModule, "plugin_get_author");
+                inst.get_description = (const char* (*)(void))GetProcAddress(hModule, "plugin_get_description");
+                
+                if (!inst.init || !inst.handle_message) {
+                    FreeLibrary(hModule);
+                    continue;
+                }
+                
+                std::wstring plugin_data_path_w = plugin_data_dir + find_data.cFileName;
+                CreateDirectoryW(plugin_data_path_w.c_str(), NULL);
+                std::string plugin_data_path(plugin_data_path_w.begin(), plugin_data_path_w.end());
+                
+                PluginInitParams params;
+                params.log_func = plugin_log_wrapper;
+                params.send_msg_func = plugin_send_message_wrapper;
+                params.appid = appid.c_str();
+                params.data_path = plugin_data_path.c_str();
+                
+                int ret = inst.init(&params);
+                if (ret != 0) {
+                    FreeLibrary(hModule);
+                    continue;
+                }
+                
+                if (inst.get_name) {
+                    inst.display_name = inst.get_name();
+                } else {
+                    inst.display_name = dll_name;
+                }
+                
+                if (inst.get_priority) {
+                    inst.priority = inst.get_priority();
+                }
+                
+                if (inst.get_author) {
+                    inst.author = inst.get_author();
+                }
+                
+                if (inst.get_description) {
+                    inst.description = inst.get_description();
+                }
+                
+                m_plugins.push_back(inst);
+                ui_log("info", ("Loaded plugin: " + inst.name).c_str());
+            }
+            catch (...) {
+                ui_log("error", ("Failed to load plugin: " + dll_name).c_str());
+            }
+        }
+    } while (FindNextFileW(hFind, &find_data));
+    
+    FindClose(hFind);
+    
+    ui_log("info", ("Total plugins loaded: " + std::to_string(m_plugins.size())).c_str());
+}
+
+void PluginManager::unload_plugins() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    
+    for (auto& inst : m_plugins) {
+        try {
+            if (inst.shutdown) {
+                inst.shutdown();
+            }
+            FreeLibrary(inst.handle);
+        }
+        catch (...) {
+        }
+    }
+    
+    m_plugins.clear();
+}
+
+void PluginManager::handle_message(const Message& message, bool is_group) {
+    std::vector<PluginInstance> plugins_copy;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (auto& inst : m_plugins) {
+            if (inst.enabled) {
+                plugins_copy.push_back(inst);
+            }
+        }
+    }
+    
+    std::sort(plugins_copy.begin(), plugins_copy.end(), [](const PluginInstance& a, const PluginInstance& b) {
+        return a.priority < b.priority;
+    });
+    
+    for (auto& inst : plugins_copy) {
+        try {
+            PluginMessage plugin_msg;
+            plugin_msg.id = message.id.c_str();
+            plugin_msg.content = message.content.c_str();
+            plugin_msg.sender_id = message.sender_id.c_str();
+            plugin_msg.channel_id = message.channel_id.c_str();
+            plugin_msg.is_group = is_group ? 1 : 0;
+            plugin_msg.openid = message.openid.c_str();
+            plugin_msg.group_openid = message.group_openid.c_str();
+            
+            int ret = inst.handle_message(&plugin_msg);
+            
+            if (ret == 1) {
+                break;
+            }
+        }
+        catch (...) {
+        }
+    }
+}
+
+std::vector<PluginInstance> PluginManager::get_plugins() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_plugins;
+}
+
+bool PluginManager::toggle_plugin(const std::string& name, bool enable) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    
+    for (auto& inst : m_plugins) {
+        if (inst.name == name) {
+            inst.enabled = enable;
+            ui_log("info", ("Plugin " + inst.name + " " + (enable ? "enabled" : "disabled")).c_str());
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PluginManager::unload_plugin(const std::string& name) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    
+    for (auto it = m_plugins.begin(); it != m_plugins.end(); ++it) {
+        if (it->name == name) {
+            try {
+                if (it->shutdown) {
+                    it->shutdown();
+                }
+                FreeLibrary(it->handle);
+            }
+            catch (...) {
+            }
+            m_plugins.erase(it);
+            ui_log("info", ("Unloaded plugin: " + name).c_str());
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PluginManager::reload_plugins(const std::string& appid) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    
+    for (auto& inst : m_plugins) {
+        try {
+            if (inst.shutdown) {
+                inst.shutdown();
+            }
+            FreeLibrary(inst.handle);
+        }
+        catch (...) {
+        }
+    }
+    m_plugins.clear();
+    
+    wchar_t exe_path[MAX_PATH];
+    GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    std::wstring exe_dir_w = exe_path;
+    size_t pos = exe_dir_w.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) {
+        exe_dir_w = exe_dir_w.substr(0, pos);
+    }
+    
+    std::wstring plugins_dir = exe_dir_w + L"\\plugins\\";
+    std::wstring plugin_data_dir = exe_dir_w + L"\\plugin_data\\";
+    
+    CreateDirectoryW(plugins_dir.c_str(), NULL);
+    CreateDirectoryW(plugin_data_dir.c_str(), NULL);
+    
+    WIN32_FIND_DATAW find_data;
+    HANDLE hFind = FindFirstFileW((plugins_dir + L"*.dll").c_str(), &find_data);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return true;
+    }
+    
+    int loaded_count = 0;
+    do {
+        if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            std::wstring dll_path = plugins_dir + find_data.cFileName;
+            std::string dll_name(find_data.cFileName, find_data.cFileName + wcslen(find_data.cFileName));
+            
+            try {
+                HMODULE hModule = LoadLibraryW(dll_path.c_str());
+                if (!hModule) continue;
+                
+                PluginInstance inst;
+                inst.handle = hModule;
+                inst.name = dll_name;
+                inst.enabled = true;
+                inst.priority = 0;
+                
+                inst.init = (PluginInitFunc)GetProcAddress(hModule, "plugin_init");
+                inst.handle_message = (PluginHandleMessageFunc)GetProcAddress(hModule, "plugin_handle_message");
+                inst.shutdown = (PluginShutdownFunc)GetProcAddress(hModule, "plugin_shutdown");
+                inst.get_name = (PluginGetNameFunc)GetProcAddress(hModule, "plugin_get_name");
+                inst.get_priority = (PluginGetPriorityFunc)GetProcAddress(hModule, "plugin_get_priority");
+                inst.get_author = (const char* (*)(void))GetProcAddress(hModule, "plugin_get_author");
+                inst.get_description = (const char* (*)(void))GetProcAddress(hModule, "plugin_get_description");
+                
+                if (!inst.init || !inst.handle_message) {
+                    FreeLibrary(hModule);
+                    continue;
+                }
+                
+                std::wstring plugin_data_path_w = plugin_data_dir + find_data.cFileName;
+                CreateDirectoryW(plugin_data_path_w.c_str(), NULL);
+                std::string plugin_data_path(plugin_data_path_w.begin(), plugin_data_path_w.end());
+                
+                PluginInitParams params;
+                params.log_func = plugin_log_wrapper;
+                params.send_msg_func = plugin_send_message_wrapper;
+                params.appid = appid.c_str();
+                params.data_path = plugin_data_path.c_str();
+                
+                int ret = inst.init(&params);
+                if (ret != 0) {
+                    FreeLibrary(hModule);
+                    continue;
+                }
+                
+                if (inst.get_name) {
+                    inst.display_name = inst.get_name();
+                } else {
+                    inst.display_name = dll_name;
+                }
+                
+                if (inst.get_priority) {
+                    inst.priority = inst.get_priority();
+                }
+                
+                if (inst.get_author) {
+                    inst.author = inst.get_author();
+                }
+                
+                if (inst.get_description) {
+                    inst.description = inst.get_description();
+                }
+                
+                m_plugins.push_back(inst);
+                loaded_count++;
+                ui_log("info", ("Reloaded plugin: " + inst.name).c_str());
+            }
+            catch (...) {
+                ui_log("error", ("Failed to reload plugin: " + dll_name).c_str());
+            }
+        }
+    } while (FindNextFileW(hFind, &find_data));
+    
+    FindClose(hFind);
+    ui_log("info", ("Plugins reloaded, total: " + std::to_string(loaded_count)).c_str());
+    return true;
 }
 
 
@@ -597,9 +919,96 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     };
 
-    mainWin.SetCommandHandler([&client](const std::string& cmd) {
-        if (cmd == "stop") {
-            client.stop();
+    mainWin.SetCommandHandler([&client, &mainWin, &config](const std::string& cmd) {
+        try {
+            if (cmd == "stop") {
+                client.stop();
+            } else if (cmd == "get_plugins") {
+                auto plugins = client.get_plugins();
+                json j;
+                j["type"] = "plugins";
+                json::array_t arr;
+                for (auto& p : plugins) {
+                    json item;
+                    item["name"] = p.name;
+                    item["display_name"] = p.display_name;
+                    item["author"] = p.author;
+                    item["description"] = p.description;
+                    item["enabled"] = p.enabled;
+                    item["priority"] = p.priority;
+                    arr.push_back(item);
+                }
+                j["plugins"] = arr;
+                mainWin.PostPlugins(j.dump());
+            } else if (cmd.rfind("toggle_plugin:", 0) == 0) {
+                std::string plugin_name = cmd.substr(14);
+                auto plugins = client.get_plugins();
+                bool current_enabled = true;
+                for (auto& p : plugins) {
+                    if (p.name == plugin_name) {
+                        current_enabled = p.enabled;
+                        break;
+                    }
+                }
+                client.toggle_plugin(plugin_name, !current_enabled);
+                auto plugins_after = client.get_plugins();
+                json j;
+                j["type"] = "plugins";
+                json::array_t arr;
+                for (auto& p : plugins_after) {
+                    json item;
+                    item["name"] = p.name;
+                    item["display_name"] = p.display_name;
+                    item["author"] = p.author;
+                    item["description"] = p.description;
+                    item["enabled"] = p.enabled;
+                    item["priority"] = p.priority;
+                    arr.push_back(item);
+                }
+                j["plugins"] = arr;
+                mainWin.PostPlugins(j.dump());
+            } else if (cmd.rfind("unload_plugin:", 0) == 0) {
+                std::string plugin_name = cmd.substr(14);
+                client.unload_plugin(plugin_name);
+                auto plugins = client.get_plugins();
+                json j;
+                j["type"] = "plugins";
+                json::array_t arr;
+                for (auto& p : plugins) {
+                    json item;
+                    item["name"] = p.name;
+                    item["display_name"] = p.display_name;
+                    item["author"] = p.author;
+                    item["description"] = p.description;
+                    item["enabled"] = p.enabled;
+                    item["priority"] = p.priority;
+                    arr.push_back(item);
+                }
+                j["plugins"] = arr;
+                mainWin.PostPlugins(j.dump());
+            } else if (cmd == "reload_plugins") {
+                client.reload_plugins(config.appid);
+                auto plugins = client.get_plugins();
+                json j;
+                j["type"] = "plugins";
+                json::array_t arr;
+                for (auto& p : plugins) {
+                    json item;
+                    item["name"] = p.name;
+                    item["display_name"] = p.display_name;
+                    item["author"] = p.author;
+                    item["description"] = p.description;
+                    item["enabled"] = p.enabled;
+                    item["priority"] = p.priority;
+                    arr.push_back(item);
+                }
+                j["plugins"] = arr;
+                mainWin.PostPlugins(j.dump());
+            }
+        } catch (const std::exception& e) {
+            mainWin.PostLog("error", "Command handler exception: " + std::string(e.what()));
+        } catch (...) {
+            mainWin.PostLog("error", "Command handler unknown exception");
         }
     });
 
