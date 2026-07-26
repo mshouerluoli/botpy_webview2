@@ -361,22 +361,38 @@ body {
     box-shadow: 0 4px 12px rgba(248, 113, 113, 0.35);
     transform: translateY(-1px);
 }
-.btn-reload-all {
-    padding: 12px 24px;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+.plugin-toolbar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 16px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border-soft);
+}
+.btn-toolbar {
+    padding: 9px 18px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 12.5px;
+    font-weight: 500;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    font-family: inherit;
+    letter-spacing: 0.3px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.btn-refresh {
+    background: linear-gradient(135deg, rgba(124, 131, 255, 0.2), rgba(124, 131, 255, 0.1));
+    color: #c7cbff;
+    border: 1px solid rgba(124, 131, 255, 0.3);
+}
+.btn-refresh:hover {
+    background: linear-gradient(135deg, var(--accent), #6772e5);
     color: #fff;
-    margin: 18px 0 6px;
-    font-size: 13.5px;
-    font-weight: 600;
-    border: none;
-    box-shadow: 0 6px 18px var(--accent-glow);
+    box-shadow: 0 4px 12px var(--accent-glow);
+    transform: translateY(-1px);
 }
-.btn-reload-all:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 10px 28px var(--accent-glow);
-    filter: brightness(1.1);
-}
-.btn-reload-all:active,
+.btn-toolbar:active,
 .btn:active {
     transform: translateY(0);
 }
@@ -530,8 +546,19 @@ function renderPlugins(plugins) {
     const container = document.getElementById('pluginList');
     container.innerHTML = '';
     
+    const toolbar = document.createElement('div');
+    toolbar.className = 'plugin-toolbar';
+
+    const refreshBtn = document.createElement('button');
+    refreshBtn.className = 'btn-toolbar btn-refresh';
+    refreshBtn.innerHTML = '<span style="font-size:14px;">⟳</span>刷新';
+    refreshBtn.onclick = reloadPlugins;
+    toolbar.appendChild(refreshBtn);
+
+    container.appendChild(toolbar);
+    
     if (!plugins || plugins.length === 0) {
-        container.innerHTML = '<div class="empty-state">暂无可管理的插件</div>';
+        container.innerHTML += '<div class="empty-state">暂无可管理的插件</div>';
         return;
     }
     
@@ -559,12 +586,6 @@ function renderPlugins(plugins) {
         `;
         container.appendChild(item);
     });
-    
-    const reloadBtn = document.createElement('button');
-    reloadBtn.className = 'btn btn-reload-all';
-    reloadBtn.textContent = '重新加载所有插件';
-    reloadBtn.onclick = reloadPlugins;
-    container.appendChild(reloadBtn);
 }
 
 function togglePlugin(name) {
@@ -578,9 +599,7 @@ function unloadPlugin(name) {
 }
 
 function reloadPlugins() {
-    if (confirm('确定要重新加载所有插件吗？')) {
-        sendCommand('reload_plugins');
-    }
+    sendCommand('reload_plugins');
 }
 </script>
 </body>

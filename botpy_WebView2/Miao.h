@@ -12,10 +12,12 @@
 
 #include "http/websocket_client.hpp"
 #include "plugin_api.h"
+#include "message_queue.h"
 
 struct Config {
     std::string appid;
     std::string secret;
+    int worker_count;
     bool load_from_file(const std::string& path);
 };
 
@@ -73,7 +75,7 @@ public:
     MyClient();
     ~MyClient();
     
-    void run(const std::string& appid, const std::string& secret);
+    void run(const std::string& appid, const std::string& secret, int worker_count = 4);
     void stop();
     
     bool send_c2c_message(const std::string& openid, const std::string& content, const std::string& msg_id = "") {
@@ -109,6 +111,10 @@ private:
     void _send_identify();
     void _handle_event(const std::string& event_json);
     void _handle_common_commands(const Message& message, bool message_isgroup);
+    void _worker_thread();
+    void _start_worker_pool();
+    void _stop_worker_pool();
+    void _process_message_task(const MessageTask& task);
 
     bool _send_c2c_message(const std::string& openid, const std::string& content, const std::string& msg_id = "");
     bool _send_group_message(const std::string& group_openid, const std::string& content, const std::string& msg_id = "");
@@ -130,10 +136,14 @@ private:
     int m_heartbeat_interval;
     std::string m_session_id;
     int m_sequence;
-    int m_message_count;
+    std::atomic<int> m_message_count;
     int m_heartbeat_count;
     std::string m_nickname;
     std::atomic<uint64_t> m_last_message_ts;
+    
+    MessageQueue m_message_queue;
+    std::vector<std::thread> m_worker_threads;
+    int m_worker_count;
     
     PluginManager m_plugin_manager;
 };

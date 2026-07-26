@@ -5,7 +5,7 @@ extern "C" {
 #endif
 
 typedef void (*PluginLogFunc)(const char* level, const char* msg);
-typedef int (*PluginSendMessageFunc)(const char* target_id, const char* content, int is_group);
+typedef int (*PluginSendMessageFunc)(const char* target_id, const char* content, int is_group, const char* msg_id);
 
 typedef struct {
     const char* id;

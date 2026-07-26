@@ -26,13 +26,16 @@ extern "C" void plugin_log_wrapper(const char* level, const char* msg) {
 
 static MyClient* g_client = nullptr;
 
-extern "C" int plugin_send_message_wrapper(const char* target_id, const char* content, int is_group) {
+extern "C" int plugin_send_message_wrapper(const char* target_id, const char* content, int is_group, const char* msg_id) {
     if (!g_client || !target_id || !content) return 0;
+    std::string s_msg_id = msg_id ? msg_id : "";
+    bool result;
     if (is_group) {
-        return g_client->send_group_message(target_id, content, "") ? 1 : 0;
+        result = g_client->send_group_message(target_id, content, s_msg_id);
     } else {
-        return g_client->send_c2c_message(target_id, content, "") ? 1 : 0;
+        result = g_client->send_c2c_message(target_id, content, s_msg_id);
     }
+    return result ? 1 : 0;
 }
 
 static std::string get_log_path() {
@@ -100,15 +103,24 @@ bool Config::load_from_file(const std::string& path) {
     std::string content((std::istreambuf_iterator<char>(file)),
                         std::istreambuf_iterator<char>());
     
+    worker_count = 4;
+    
     std::smatch match;
     std::regex appid_regex(R"(appid\s*:\s*["']([^"']+)["'])");
     std::regex secret_regex(R"(secret\s*:\s*["']([^"']+)["'])");
+    std::regex worker_regex(R"(worker_count\s*:\s*(\d+))");
     
     if (std::regex_search(content, match, appid_regex)) {
         appid = match[1].str();
     }
     if (std::regex_search(content, match, secret_regex)) {
         secret = match[1].str();
+    }
+    if (std::regex_search(content, match, worker_regex)) {
+        int count = std::stoi(match[1].str());
+        if (count >= 1 && count <= 64) {
+            worker_count = count;
+        }
     }
     
     return !appid.empty() && !secret.empty();
@@ -117,7 +129,7 @@ bool Config::load_from_file(const std::string& path) {
 MyClient::MyClient() 
     : m_running(false), m_websocket_connected(false), 
       m_heartbeat_interval(0), m_sequence(0), m_message_count(0), m_heartbeat_count(0),
-      m_last_message_ts(0), m_websocket(nullptr) {}
+      m_last_message_ts(0), m_websocket(nullptr), m_worker_count(4) {}
 
 MyClient::~MyClient() {
     stop();
@@ -432,7 +444,13 @@ bool MyClient::_send_c2c_message(const std::string& openid, const std::string& c
         log("error", "Failed to send C2C message, code: " + std::to_string(response.code));
         return false;
     }
-    return response.code >= 200 && response.code < 300;
+    if (response.code < 200 || response.code >= 300) {
+        log("error", "C2C send failed: HTTP " + std::to_string(response.code) +
+                     ", msg_id=" + (msg_id.empty() ? "(empty)" : msg_id) +
+                     ", body=" + response.body);
+        return false;
+    }
+    return true;
 }
 
 bool MyClient::_send_group_message(const std::string& group_openid, const std::string& content, const std::string& msg_id) {
@@ -451,13 +469,13 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
         log("error", "Failed to send group message, code: " + std::to_string(response.code));
         return false;
     }
-    return response.code >= 200 && response.code < 300;
-}
-
-void MyClient::_handle_common_commands(const Message& message, bool message_isgroup) {
-    m_message_count++;
-    if (on_info) on_info("msgCount", std::to_string(m_message_count));
-    m_plugin_manager.handle_message(message, message_isgroup);
+    if (response.code < 200 || response.code >= 300) {
+        log("error", "Group send failed: HTTP " + std::to_string(response.code) +
+                     ", msg_id=" + (msg_id.empty() ? "(empty)" : msg_id) +
+                     ", body=" + response.body);
+        return false;
+    }
+    return true;
 }
 
 void MyClient::on_ready() {
@@ -466,6 +484,36 @@ void MyClient::on_ready() {
     if (on_info) on_info("sessionId", m_session_id);
     if (on_info && !m_nickname.empty()) on_info("nickname", m_nickname);
 }
+
+void MyClient::_handle_common_commands(const Message& message, bool message_isgroup) {
+    m_message_count++;
+    if (on_info) on_info("msgCount", std::to_string(m_message_count.load()));
+    
+    MessageTask task;
+    task.id = message.id;
+    task.content = message.content;
+    task.sender_id = message.sender_id;
+    task.channel_id = message.channel_id;
+    task.is_group = message_isgroup;
+    task.openid = message.openid;
+    task.group_openid = message.group_openid;
+    
+    m_message_queue.push(task);
+}
+
+void MyClient::_process_message_task(const MessageTask& task) {
+    Message msg;
+    msg.id = task.id;
+    msg.content = task.content;
+    msg.sender_id = task.sender_id;
+    msg.channel_id = task.channel_id;
+    msg.is_group = task.is_group;
+    msg.openid = task.openid;
+    msg.group_openid = task.group_openid;
+    
+    m_plugin_manager.handle_message(msg, task.is_group);
+}
+
 
 void MyClient::on_c2c_message_create(const C2CMessage& message) {
     if (on_message) on_message(false, message.content);
@@ -477,16 +525,17 @@ void MyClient::on_group_at_message_create(const GroupMessage& message) {
     _handle_common_commands(message, true);
 }
 
-void MyClient::run(const std::string& appid, const std::string& secret) {
+void MyClient::run(const std::string& appid, const std::string& secret, int worker_count) {
     g_client = this;
     m_appid = appid;
     m_secret = secret;
+    m_worker_count = worker_count;
     m_running = true;
     m_websocket_connected = false;
     m_heartbeat_interval = 0;
     m_sequence = 0;
     m_session_id.clear();
-    m_message_count = 0;
+    m_message_count.store(0);
     m_heartbeat_count = 0;
 
     if (on_info) on_info("appId", appid);
@@ -517,6 +566,8 @@ void MyClient::run(const std::string& appid, const std::string& secret) {
 
     m_plugin_manager.load_plugins(appid);
 
+    _start_worker_pool();
+
     if (m_heartbeat_thread.joinable()) {
         m_heartbeat_thread.detach();
     }
@@ -530,6 +581,8 @@ void MyClient::stop() {
     
     m_running = false;
     m_websocket_connected = false;
+    
+    _stop_worker_pool();
     
     {
         std::lock_guard<std::mutex> lock(m_websocket_mutex);
@@ -548,6 +601,41 @@ void MyClient::stop() {
     
     log("info", "Client stopped");
     if (on_status) on_status("offline", "已断开");
+}
+
+void MyClient::_start_worker_pool() {
+    log("info", "Starting worker pool with " + std::to_string(m_worker_count) + " threads");
+    m_message_queue.reset();
+    for (int i = 0; i < m_worker_count; ++i) {
+        m_worker_threads.emplace_back(&MyClient::_worker_thread, this);
+    }
+}
+
+void MyClient::_stop_worker_pool() {
+    log("info", "Stopping worker pool...");
+    m_message_queue.stop();
+    
+    for (auto& t : m_worker_threads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+    m_worker_threads.clear();
+    log("info", "Worker pool stopped");
+}
+
+void MyClient::_worker_thread() {
+    while (m_running) {
+        MessageTask task;
+        if (m_message_queue.pop(task)) {
+            try {
+                _process_message_task(task);
+            } catch (...) {
+            }
+        } else {
+            break;
+        }
+    }
 }
 
 PluginManager::PluginManager() {}
@@ -587,15 +675,18 @@ void PluginManager::load_plugins(const std::string& appid) {
             try {
                 HMODULE hModule = LoadLibraryW(dll_path.c_str());
                 if (!hModule) {
+                    DWORD err = GetLastError();
+                    ui_log("error", ("LoadLibrary failed: " + dll_name +
+                                     ", GetLastError=" + std::to_string(err)).c_str());
                     continue;
                 }
-                
+
                 PluginInstance inst;
                 inst.handle = hModule;
                 inst.name = dll_name;
                 inst.enabled = true;
                 inst.priority = 0;
-                
+
                 inst.init = (PluginInitFunc)GetProcAddress(hModule, "plugin_init");
                 inst.handle_message = (PluginHandleMessageFunc)GetProcAddress(hModule, "plugin_handle_message");
                 inst.shutdown = (PluginShutdownFunc)GetProcAddress(hModule, "plugin_shutdown");
@@ -603,46 +694,48 @@ void PluginManager::load_plugins(const std::string& appid) {
                 inst.get_priority = (PluginGetPriorityFunc)GetProcAddress(hModule, "plugin_get_priority");
                 inst.get_author = (const char* (*)(void))GetProcAddress(hModule, "plugin_get_author");
                 inst.get_description = (const char* (*)(void))GetProcAddress(hModule, "plugin_get_description");
-                
+
                 if (!inst.init || !inst.handle_message) {
+                    ui_log("error", ("Plugin missing required exports: " + dll_name).c_str());
                     FreeLibrary(hModule);
                     continue;
                 }
-                
+
                 std::wstring plugin_data_path_w = plugin_data_dir + find_data.cFileName;
                 CreateDirectoryW(plugin_data_path_w.c_str(), NULL);
                 std::string plugin_data_path(plugin_data_path_w.begin(), plugin_data_path_w.end());
-                
+
                 PluginInitParams params;
                 params.log_func = plugin_log_wrapper;
                 params.send_msg_func = plugin_send_message_wrapper;
                 params.appid = appid.c_str();
                 params.data_path = plugin_data_path.c_str();
-                
+
                 int ret = inst.init(&params);
                 if (ret != 0) {
+                    ui_log("error", ("Plugin init returned " + std::to_string(ret) + ": " + dll_name).c_str());
                     FreeLibrary(hModule);
                     continue;
                 }
-                
+
                 if (inst.get_name) {
                     inst.display_name = inst.get_name();
                 } else {
                     inst.display_name = dll_name;
                 }
-                
+
                 if (inst.get_priority) {
                     inst.priority = inst.get_priority();
                 }
-                
+
                 if (inst.get_author) {
                     inst.author = inst.get_author();
                 }
-                
+
                 if (inst.get_description) {
                     inst.description = inst.get_description();
                 }
-                
+
                 m_plugins.push_back(inst);
                 ui_log("info", ("Loaded plugin: " + inst.name).c_str());
             }
@@ -699,9 +792,9 @@ void PluginManager::handle_message(const Message& message, bool is_group) {
             plugin_msg.is_group = is_group ? 1 : 0;
             plugin_msg.openid = message.openid.c_str();
             plugin_msg.group_openid = message.group_openid.c_str();
-            
+
             int ret = inst.handle_message(&plugin_msg);
-            
+
             if (ret == 1) {
                 break;
             }
@@ -793,14 +886,19 @@ bool PluginManager::reload_plugins(const std::string& appid) {
             
             try {
                 HMODULE hModule = LoadLibraryW(dll_path.c_str());
-                if (!hModule) continue;
-                
+                if (!hModule) {
+                    DWORD err = GetLastError();
+                    ui_log("error", ("LoadLibrary failed: " + dll_name +
+                                     ", GetLastError=" + std::to_string(err)).c_str());
+                    continue;
+                }
+
                 PluginInstance inst;
                 inst.handle = hModule;
                 inst.name = dll_name;
                 inst.enabled = true;
                 inst.priority = 0;
-                
+
                 inst.init = (PluginInitFunc)GetProcAddress(hModule, "plugin_init");
                 inst.handle_message = (PluginHandleMessageFunc)GetProcAddress(hModule, "plugin_handle_message");
                 inst.shutdown = (PluginShutdownFunc)GetProcAddress(hModule, "plugin_shutdown");
@@ -808,24 +906,26 @@ bool PluginManager::reload_plugins(const std::string& appid) {
                 inst.get_priority = (PluginGetPriorityFunc)GetProcAddress(hModule, "plugin_get_priority");
                 inst.get_author = (const char* (*)(void))GetProcAddress(hModule, "plugin_get_author");
                 inst.get_description = (const char* (*)(void))GetProcAddress(hModule, "plugin_get_description");
-                
+
                 if (!inst.init || !inst.handle_message) {
+                    ui_log("error", ("Plugin missing required exports: " + dll_name).c_str());
                     FreeLibrary(hModule);
                     continue;
                 }
-                
+
                 std::wstring plugin_data_path_w = plugin_data_dir + find_data.cFileName;
                 CreateDirectoryW(plugin_data_path_w.c_str(), NULL);
                 std::string plugin_data_path(plugin_data_path_w.begin(), plugin_data_path_w.end());
-                
+
                 PluginInitParams params;
                 params.log_func = plugin_log_wrapper;
                 params.send_msg_func = plugin_send_message_wrapper;
                 params.appid = appid.c_str();
                 params.data_path = plugin_data_path.c_str();
-                
+
                 int ret = inst.init(&params);
                 if (ret != 0) {
+                    ui_log("error", ("Plugin init returned " + std::to_string(ret) + ": " + dll_name).c_str());
                     FreeLibrary(hModule);
                     continue;
                 }
@@ -912,7 +1012,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     client.on_restart = [&client, &config]() {
         std::this_thread::sleep_for(std::chrono::seconds(3));
         try {
-            client.run(config.appid, config.secret);
+            client.run(config.appid, config.secret, config.worker_count);
         } catch (const std::exception& ) {
         } catch (...) {
         }
@@ -1014,7 +1114,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     mainWin.SetReadyHandler([&client, &config]() {
         std::thread bot_thread([&client, &config]() {
             try {
-                client.run(config.appid, config.secret);
+                client.run(config.appid, config.secret, config.worker_count);
             } catch (const std::exception& ) {
 
             } catch (...) {

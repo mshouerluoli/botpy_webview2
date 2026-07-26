@@ -1,4 +1,3 @@
-// dllmain.cpp : 定义 DLL 应用程序的入口点。
 #include "framework.h"
 
 
@@ -56,12 +55,12 @@ extern "C" __declspec(dllexport) int plugin_handle_message(const PluginMessage* 
 
     if (g_send_msg) {
         if (msg->is_group && msg->group_openid) {
-            g_send_msg(msg->group_openid, "Hello from plugin!", 1);
+            g_send_msg(msg->group_openid, "Hello from plugin!", 1, msg->id);
         }
         else if (!msg->is_group && msg->openid) {
-            g_send_msg(msg->openid, "Hello from plugin!", 0);
+            g_send_msg(msg->openid, "Hello from plugin!", 0, msg->id);
         }
-        return 1;//拦截优先级低的插件信息
+
     }
 
     return 0;

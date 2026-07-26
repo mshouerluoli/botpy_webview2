@@ -11,6 +11,7 @@
 - **消息处理**：支持私聊消息（C2C_MESSAGE_CREATE）和群@消息（GROUP_AT_MESSAGE_CREATE）
 - **实时日志**：所有运行日志、状态变化、收发消息实时显示在 UI 中，自动换行、横向滚动条隐藏
 - **资源嵌入**：HTML 界面以 RCDATA 资源形式嵌入 EXE，启动时自动释放，无需额外文件
+- **⚡ 多线程消息处理**：基于消息队列 + 工作线程池的生产者-消费者模型，4 个工作线程并发处理消息，高并发下不阻塞 WebSocket 接收
 - **🔌 插件系统**：支持动态加载 DLL 插件，提供独立的插件数据目录、优先级调度、消息拦截机制，可在 UI 中启用/停用/卸载/重载
 
 ## 🛠️ 技术栈
@@ -37,6 +38,7 @@ botpy_WebView2/
 │   ├── botpy_WebView2.rc            # 资源文件（嵌入 HTML）
 │   ├── resource.h                   # 资源头文件
 │   ├── plugin_api.h                 # 🔌 插件 API 定义（插件与主程序共享）
+│   ├── message_queue.h              # ⚡ 线程安全的消息队列（工作线程池用）
 │   ├── MainWindow.h/cpp             # 主窗口及 WebView2 管理
 │   ├── Miao.h/cpp                   # 机器人客户端核心逻辑 + 插件管理器
 │   ├── webview_handlers.h/cpp       # WebView2 事件处理器
@@ -65,6 +67,7 @@ botpy_WebView2/
 ```yaml
 appid: "你的机器人AppID"
 secret: "你的机器人Secret"
+worker_count: 4    # 可选，工作线程数，默认 4，范围 1~64
 ```
 
 > AppID 和 Secret 可在 [QQ 开放平台](https://q.qq.com/) 申请。
@@ -251,15 +254,18 @@ extern "C" __declspec(dllexport) const char* plugin_get_description() { return "
 - 重连流程：重新认证 → 获取网关 → 连接 WebSocket → 发送 Identify
 - 心跳超时检测：超过 2 倍心跳间隔未收到消息则判定为断开
 - 心跳线程在重新创建前会先 detach 旧线程，避免 joinable 线程被覆盖导致 `std::terminate`
+- 重连时消息队列会重置状态，工作线程池会完整停止后重新启动，确保重连后消息处理正常
 
 ### 消息分发
 
-收到 QQ 消息后：
+收到 QQ 消息后采用**生产者-消费者模型**处理：
 
-1. 主程序解析事件，更新 UI（消息数 +1，日志打印）
-2. 按优先级升序将消息分发给所有已启用的插件
-3. 任一插件返回 1 即停止后续分发
+1. **WebSocket 接收线程（生产者）**：解析事件，更新 UI（消息数 +1，日志打印），将消息封装为任务推入消息队列后立即返回，继续接收下一条消息
+2. **工作线程池（消费者）**：4 个工作线程从消息队列并发取任务，每个任务内部按优先级升序将消息分发给所有已启用的插件
+3. 任一插件返回 1 即停止后续分发（同一条消息内的插件链保持串行，拦截机制完全有效）
 4. 插件可通过 `send_msg_func` 主动发送回复消息
+
+> 单条消息内部的插件处理链仍然串行执行，保证优先级排序和消息拦截逻辑正确；并发体现在**多条消息之间**同时处理。
 
 ### 消息回复 API
 
@@ -272,6 +278,9 @@ extern "C" __declspec(dllexport) const char* plugin_get_description() { return "
 
 - WebView2 的 COM 调用只能在主线程进行，跨线程 UI 更新通过 `PostMessage` + 自定义消息（`WM_UILOG` / `WM_UISTATUS` / `WM_UIPLUGINS`）派发到主线程
 - 插件管理器内部使用 `std::mutex` 保护插件列表
+- 消息队列使用 `std::mutex + std::condition_variable` 实现线程安全的生产/消费
+- `m_message_count` 等计数使用 `std::atomic` 保证原子性
+- **插件开发者请注意**：`plugin_handle_message` 可能被多个工作线程**同时调用**，若插件内部有全局变量/共享状态，请自行加锁保护
 
 ## 📄 许可证
 
