@@ -784,8 +784,12 @@ void PluginManager::load_plugins(const std::string& appid) {
                     FreeLibrary(hModule);
                     continue;
                 }
-
-                std::wstring plugin_data_path_w = plugin_data_dir + find_data.cFileName;
+                std::wstring fileName = find_data.cFileName;
+                size_t dotPos = fileName.find_last_of(L".");
+                if (dotPos != std::wstring::npos) {
+                    fileName = fileName.substr(0, dotPos);
+                }
+                std::wstring plugin_data_path_w = plugin_data_dir + fileName;
                 CreateDirectoryW(plugin_data_path_w.c_str(), NULL);
                 std::string plugin_data_path(plugin_data_path_w.begin(), plugin_data_path_w.end());
 
