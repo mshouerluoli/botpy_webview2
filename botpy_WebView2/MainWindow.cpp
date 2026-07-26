@@ -114,7 +114,8 @@ LRESULT MainWindow::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_UIREADY: {
         if (m_ready_handler) {
-            m_ready_handler();
+            auto handler = std::move(m_ready_handler);
+            handler();
         }
         return 0;
     }
@@ -151,6 +152,7 @@ void MainWindow::OnReady() {
 }
 
 void MainWindow::OnNavigationCompleted() {
+    if (m_webview_ready) return;
     m_webview_ready = true;
     FlushLogCache();
     PostMessage(m_hwnd, WM_UIREADY, 0, 0);

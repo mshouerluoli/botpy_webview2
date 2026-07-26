@@ -20,8 +20,34 @@ static void ui_log(const std::string& level, const std::string& msg) {
     }
 }
 
+static std::string get_log_path() {
+    wchar_t exe_path[MAX_PATH];
+    GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    std::wstring exe_dir_w = exe_path;
+    size_t pos = exe_dir_w.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) {
+        exe_dir_w = exe_dir_w.substr(0, pos);
+    }
+    std::string exe_dir(exe_dir_w.begin(), exe_dir_w.end());
+    return exe_dir + "/log.txt";
+}
+
 void MyClient::log(const std::string& level, const std::string& msg) {
-    ui_log(level, msg);
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+    char time_str[32];
+    std::tm time_info;
+    localtime_s(&time_info, &now_time);
+    std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &time_info);
+    
+    std::string log_line = "[" + std::string(time_str) + "] [" + level + "] " + msg + "\n";
+    
+    std::ofstream log_file(get_log_path(), std::ios::app);
+    if (log_file.is_open()) {
+        log_file << log_line;
+        log_file.flush();
+    }
+    
     if (on_log) {
         on_log(level, msg);
     }
@@ -83,17 +109,17 @@ MyClient::~MyClient() {
 }
 
 bool MyClient::_authenticate() {
-    ui_log("info", "Authenticating with appid: " + m_appid);
+    log("info", "Authenticating with appid: " + m_appid);
     
     std::string body = R"({"appId":")" + m_appid + R"(","clientSecret":")" + m_secret + R"("})";
     RestClient::Response response = RestClient::post("https://api.bot.qq.com/app/getAppAccessToken", "application/json", body);
     
     if (response.code == 0 || response.body.empty()) {
-        ui_log("error", "Authentication request failed");
+        log("error", "Authentication request failed");
         return false;
     }
     
-    ui_log("info", "Auth response: " + response.body);
+    log("info", "Auth response: " + response.body);
     
     std::string token;
     try {
@@ -102,20 +128,20 @@ bool MyClient::_authenticate() {
             token = j["access_token"].get<std::string>();
         }
     } catch (const std::exception& e) {
-        ui_log("error", std::string("Auth JSON parse error: ") + e.what());
+        log("error", std::string("Auth JSON parse error: ") + e.what());
     }
     if (token.empty()) {
-        ui_log("error", "Failed to extract access_token");
+        log("error", "Failed to extract access_token");
         return false;
     }
     
     m_token = token;
-    ui_log("success", "Authentication successful");
+    log("success", "Authentication successful");
     return true;
 }
 
 bool MyClient::_get_gateway_url() {
-    ui_log("info", "Getting gateway URL...");
+    log("info", "Getting gateway URL...");
     
     RestClient::Request request;
     request.headers["Authorization"] = "QQBot " + m_token;
@@ -123,11 +149,11 @@ bool MyClient::_get_gateway_url() {
     RestClient::Response response = RestClient::get("https://api.bot.qq.com/gateway/bot", &request);
     
     if (response.code == 0 || response.body.empty()) {
-        ui_log("error", "Failed to get gateway URL");
+        log("error", "Failed to get gateway URL");
         return false;
     }
     
-    ui_log("info", "Gateway response: " + response.body);
+    log("info", "Gateway response: " + response.body);
     
     std::string gateway;
     try {
@@ -136,39 +162,42 @@ bool MyClient::_get_gateway_url() {
             gateway = j["url"].get<std::string>();
         }
     } catch (const std::exception& e) {
-        ui_log("error", std::string("Gateway JSON parse error: ") + e.what());
+        log("error", std::string("Gateway JSON parse error: ") + e.what());
     }
     if (gateway.empty()) {
-        ui_log("error", "Failed to extract gateway URL");
+        log("error", "Failed to extract gateway URL");
         return false;
     }
     
     m_gateway_url = gateway;
-    ui_log("info", "Gateway URL: " + m_gateway_url);
+    log("info", "Gateway URL: " + m_gateway_url);
     return true;
 }
 
 bool MyClient::_connect_websocket() {
-    ui_log("info", "Connecting to WebSocket: " + m_gateway_url);
+    log("info", "Connecting to WebSocket: " + m_gateway_url);
     
-    m_websocket = new WebSocketClient();
-    m_websocket->set_message_handler([this](const std::string& msg) {
+    WebSocketClient* new_ws = new WebSocketClient();
+    new_ws->set_message_handler([this](const std::string& msg) {
         _handle_event(msg);
     });
     
-    if (!m_websocket->connect(m_gateway_url)) {
-        delete m_websocket;
-        m_websocket = nullptr;
+    if (!new_ws->connect(m_gateway_url)) {
+        delete new_ws;
         return false;
     }
     
+    {
+        std::lock_guard<std::mutex> lock(m_websocket_mutex);
+        m_websocket = new_ws;
+    }
     m_websocket_connected = true;
-    ui_log("success", "WebSocket connected successfully");
+    log("success", "WebSocket connected successfully");
     return true;
 }
 
 void MyClient::_send_identify() {
-    if (!m_websocket_connected || !m_websocket) return;
+    if (!m_websocket_connected) return;
 
     uint32_t intents = (1u << 25) | (1u << 12);
 
@@ -176,10 +205,20 @@ void MyClient::_send_identify() {
         R"(","intents":)" + std::to_string(intents) +
         R"(,"properties":{"os":"windows","browser":"MiaoBot","device":"MiaoBot"}}})";
 
-    if (!m_websocket->send(json)) {
-        ui_log("error", "Failed to send identify");
+    bool send_result;
+    {
+        std::lock_guard<std::mutex> lock(m_websocket_mutex);
+        if (!m_websocket) {
+            send_result = false;
+        } else {
+            send_result = m_websocket->send(json);
+        }
+    }
+
+    if (!send_result) {
+        log("error", "Failed to send identify");
     } else {
-        ui_log("info", "Identify sent");
+        log("info", "Identify sent");
     }
 }
 
@@ -189,13 +228,26 @@ void MyClient::_send_heartbeat() {
             if (m_heartbeat_interval > 0) {
                 std::string json = R"({"op":1,"d":)" + std::to_string(m_sequence) + R"(})";
 
-                if (!m_websocket->send(json)) {
-                    ui_log("error", "Failed to send heartbeat");
+                bool send_result;
+                {
+                    std::lock_guard<std::mutex> lock(m_websocket_mutex);
+                    if (!m_websocket) {
+                        send_result = false;
+                    } else {
+                        send_result = m_websocket->send(json);
+                    }
+                }
+
+                if (!send_result) {
+                    log("error", "Failed to send heartbeat");
                     m_websocket_connected = false;
+                    if (on_status) on_status("connecting", "心跳失败，重启中...");
+                    stop();
+                    if (on_restart) on_restart();
+                    return;
                 } else {
                     m_heartbeat_count++;
                     if (on_info) on_info("heartbeatCount", std::to_string(m_heartbeat_count));
-                    //ui_log("info", "Heartbeat sent, seq: " + std::to_string(m_sequence));
                 }
 
                 std::this_thread::sleep_for(std::chrono::milliseconds(m_heartbeat_interval));
@@ -204,9 +256,11 @@ void MyClient::_send_heartbeat() {
             }
         } else {
             if (m_running) {
-                ui_log("warn", "WebSocket disconnected, trying to reconnect...");
-                if (on_status) on_status("connecting", "重连中...");
-                _reconnect();
+                log("warn", "WebSocket disconnected");
+                if (on_status) on_status("connecting", "断开连接，重启中...");
+                stop();
+                if (on_restart) on_restart();
+                return;
             }
             std::this_thread::sleep_for(std::chrono::seconds(5));
         }
@@ -214,32 +268,35 @@ void MyClient::_send_heartbeat() {
 }
 
 bool MyClient::_reconnect() {
-    if (m_websocket) {
-        m_websocket->close();
-        delete m_websocket;
-        m_websocket = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_websocket_mutex);
+        if (m_websocket) {
+            m_websocket->close();
+            delete m_websocket;
+            m_websocket = nullptr;
+        }
     }
     m_websocket_connected = false;
     m_sequence = 0;
     m_session_id.clear();
 
     if (!_authenticate()) {
-        ui_log("error", "Reconnect: authentication failed");
+        log("error", "Reconnect: authentication failed");
         return false;
     }
 
     if (!_get_gateway_url()) {
-        ui_log("error", "Reconnect: failed to get gateway URL");
+        log("error", "Reconnect: failed to get gateway URL");
         return false;
     }
 
     if (!_connect_websocket()) {
-        ui_log("error", "Reconnect: WebSocket connection failed");
+        log("error", "Reconnect: WebSocket connection failed");
         return false;
     }
 
     _send_identify();
-    ui_log("success", "Reconnect successful");
+    log("success", "Reconnect successful");
     return true;
 }
 
@@ -324,13 +381,13 @@ void MyClient::_handle_event(const std::string& event_json) {
             if (d.contains("heartbeat_interval") && d["heartbeat_interval"].is_number()) {
                 m_heartbeat_interval = d["heartbeat_interval"].get<int>();
             }
-            ui_log("info", "Heartbeat interval: " + std::to_string(m_heartbeat_interval) + "ms");
+            log("info", "Heartbeat interval: " + std::to_string(m_heartbeat_interval) + "ms");
             _send_identify();
         } else if (op == 11) {
-            ui_log("info", "Heartbeat ACK received");
+            log("info", "Heartbeat ACK received");
         }
     } catch (const std::exception& e) {
-        ui_log("error", std::string("JSON parse error: ") + e.what());
+        log("error", std::string("JSON parse error: ") + e.what());
     }
 }
 
@@ -357,7 +414,7 @@ bool MyClient::_send_c2c_message(const std::string& openid, const std::string& c
     RestClient::Response response = RestClient::post(url, "application/json", body, &request);
 
     if (response.code == 0 || response.body.empty()) {
-        ui_log("error", "Failed to send C2C message, code: " + std::to_string(response.code));
+        log("error", "Failed to send C2C message, code: " + std::to_string(response.code));
         return false;
     }
     return response.code >= 200 && response.code < 300;
@@ -376,7 +433,7 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
     RestClient::Response response = RestClient::post(url, "application/json", body, &request);
 
     if (response.code == 0 || response.body.empty()) {
-        ui_log("error", "Failed to send group message, code: " + std::to_string(response.code));
+        log("error", "Failed to send group message, code: " + std::to_string(response.code));
         return false;
     }
 
@@ -418,16 +475,23 @@ void MyClient::on_group_at_message_create(const GroupMessage& message) {
 }
 
 void MyClient::run(const std::string& appid, const std::string& secret) {
-
     m_appid = appid;
     m_secret = secret;
     m_running = true;
+    m_websocket_connected = false;
+    m_heartbeat_interval = 0;
+    m_sequence = 0;
+    m_session_id.clear();
+    m_message_count = 0;
+    m_heartbeat_count = 0;
 
     if (on_info) on_info("appId", appid);
+    if (on_info) on_info("msgCount", "0");
+    if (on_info) on_info("heartbeatCount", "0");
 
     if (on_status) on_status("connecting", "connecting...");
 
-
+    log("info", "----------------------------------------");
     log("info", "Starting client...");
 
     if (!_authenticate()) {
@@ -441,13 +505,15 @@ void MyClient::run(const std::string& appid, const std::string& secret) {
         return;
     }
 
-
     if (!_connect_websocket()) {
         log("error", "WebSocket connection failed");
         if (on_status) on_status("offline", "websocket failed");
         return;
     }
 
+    if (m_heartbeat_thread.joinable()) {
+        m_heartbeat_thread.detach();
+    }
     m_heartbeat_thread = std::thread(&MyClient::_send_heartbeat, this);
     
     log("info", "Client started");
@@ -459,14 +525,17 @@ void MyClient::stop() {
     m_running = false;
     m_websocket_connected = false;
     
-    if (m_websocket) {
-        m_websocket->close();
-        delete m_websocket;
-        m_websocket = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_websocket_mutex);
+        if (m_websocket) {
+            m_websocket->close();
+            delete m_websocket;
+            m_websocket = nullptr;
+        }
     }
     
     if (m_heartbeat_thread.joinable()) {
-        m_heartbeat_thread.join();
+        m_heartbeat_thread.detach();
     }
     
     log("info", "Client stopped");
@@ -518,6 +587,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     };
     client.on_message = [&mainWin](bool is_group, const std::string& content) {
         mainWin.PostMessageEvent(is_group, content);
+    };
+    client.on_restart = [&client, &config]() {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        try {
+            client.run(config.appid, config.secret);
+        } catch (const std::exception& ) {
+        } catch (...) {
+        }
     };
 
     mainWin.SetCommandHandler([&client](const std::string& cmd) {

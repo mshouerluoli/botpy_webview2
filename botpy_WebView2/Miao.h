@@ -41,6 +41,7 @@ public:
     std::function<void(const std::string& status, const std::string& text)> on_status;
     std::function<void(const std::string& id, const std::string& value)> on_info;
     std::function<void(bool is_group, const std::string& content)> on_message;
+    std::function<void()> on_restart;
 
 protected:
     virtual void on_ready();
@@ -71,6 +72,7 @@ private:
     std::atomic<bool> m_running;
     std::atomic<bool> m_websocket_connected;
     
+    std::mutex m_websocket_mutex;
     WebSocketClient* m_websocket;
     std::thread m_heartbeat_thread;
     

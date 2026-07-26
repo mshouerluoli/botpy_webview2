@@ -15,23 +15,14 @@ body {
     flex-direction: column;
     overflow: hidden;
 }
-.header {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    padding: 16px 24px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-}
-.header h1 {
-    font-size: 20px;
-    font-weight: 600;
-    color: white;
-}
 .status-bar {
     display: flex;
     align-items: center;
     gap: 12px;
+    padding: 10px 12px;
+    background: #0f3460;
+    border-radius: 8px;
+    margin-bottom: 8px;
 }
 .status-dot {
     width: 10px;
@@ -59,7 +50,7 @@ body {
 }
 .status-text {
     font-size: 14px;
-    color: white;
+    color: #e0e0e0;
 }
 .main {
     flex: 1;
@@ -125,43 +116,6 @@ body {
 .log-entry.error .msg { color: #fca5a5; }
 .log-entry.warning .msg { color: #fcd34d; }
 .log-entry.message .msg { color: #c4b5fd; }
-.footer {
-    background: #16213e;
-    border-top: 1px solid #0f3460;
-    padding: 12px 16px;
-    display: flex;
-    gap: 10px;
-}
-.footer input {
-    flex: 1;
-    padding: 10px 14px;
-    background: #0f3460;
-    border: 1px solid #1e40af;
-    border-radius: 8px;
-    color: #e0e0e0;
-    font-size: 14px;
-    outline: none;
-}
-.footer input:focus {
-    border-color: #667eea;
-}
-.footer button {
-    padding: 10px 20px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: 500;
-    transition: opacity 0.2s;
-}
-.footer button:hover {
-    opacity: 0.9;
-}
-.footer button:active {
-    transform: scale(0.98);
-}
 .log-container::-webkit-scrollbar {
     width: 8px;
 }
@@ -198,17 +152,14 @@ body {
 </style>
 </head>
 <body>
-<div class="header">
-    <h1>🐱 Miao Bot</h1>
-    <div class="status-bar">
-        <div class="status-dot" id="statusDot"></div>
-        <span class="status-text" id="statusText">未连接</span>
-    </div>
-</div>
 
 <div class="main">
     <div class="sidebar">
         <h2>机器人信息</h2>
+        <div class="status-bar">
+            <div class="status-dot" id="statusDot"></div>
+            <span class="status-text" id="statusText">未连接</span>
+        </div>
         <div class="info-item">
             <div class="label">AppID</div>
             <div class="value" id="appId">-</div>
@@ -260,6 +211,11 @@ function addLog(type, message) {
     const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
     entry.innerHTML = '<span class="timestamp">[' + time + ']</span><span class="msg">' + escapeHtml(message) + '</span>';
     container.appendChild(entry);
+    
+    while (container.children.length > 100) {
+        container.removeChild(container.firstChild);
+    }
+    
     container.scrollTop = container.scrollHeight;
 }
 
@@ -291,6 +247,16 @@ if (window.chrome && chrome.webview) {
 setStatus('offline', '未连接');
 addLog('info', 'Miao Bot 控制台已就绪');
 addLog('info', '正在初始化...');
+
+document.addEventListener('contextmenu', function(e) {
+    e.preventDefault();
+});
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
+        e.preventDefault();
+    }
+});
 </script>
 </body>
 </html>
