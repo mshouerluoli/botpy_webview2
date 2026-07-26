@@ -451,7 +451,6 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
         log("error", "Failed to send group message, code: " + std::to_string(response.code));
         return false;
     }
-
     return response.code >= 200 && response.code < 300;
 }
 
