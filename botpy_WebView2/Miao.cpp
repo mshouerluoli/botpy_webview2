@@ -457,11 +457,8 @@ bool MyClient::_send_c2c_message(const std::string& openid, const std::string& c
     RestClient::Request request;
     request.headers["Authorization"] = "QQBot " + m_token;
     request.headers["Content-Type"] = "application/json";
-
     std::string url = "https://api.sgroup.qq.com/v2/users/" + openid + "/messages";
     std::string body = _build_msg_json(content, msg_id, msg_type, media);
-
-    log("info", "Send C2C msg: type=" + std::to_string(msg_type) + ", media=" + media);
     RestClient::Response response = RestClient::post(url, "application/json", body, &request);
 
     if (response.code == 0 || response.body.empty()) {
