@@ -9,6 +9,7 @@
 - **自动重连**：连接断开后自动重新认证并重连，无需人工干预
 - **心跳保活**：定时发送心跳包，检测连接状态，超时自动重连
 - **消息处理**：支持私聊消息（C2C_MESSAGE_CREATE）和群@消息（GROUP_AT_MESSAGE_CREATE）
+- **文件发送**：支持向私聊和群聊发送图片、视频、音频、文件（通过 URL 上传）
 - **实时日志**：所有运行日志、状态变化、收发消息实时显示在 UI 中，自动换行、横向滚动条隐藏
 - **资源嵌入**：HTML 界面以 RCDATA 资源形式嵌入 EXE，启动时自动释放，无需额外文件
 - **⚡ 多线程消息处理**：基于消息队列 + 工作线程池的生产者-消费者模型，4 个工作线程并发处理消息，高并发下不阻塞 WebSocket 接收
@@ -184,6 +185,7 @@ typedef struct {
 typedef struct {
     PluginLogFunc log_func;        // 日志输出函数
     PluginSendMessageFunc send_msg_func; // 发送消息函数
+    PluginPostFileFunc post_file_func;   // 发送文件函数
     const char* appid;             // 当前机器人 AppID
     const char* data_path;         // 插件专属数据目录路径
 } PluginInitParams;
@@ -206,11 +208,13 @@ typedef struct {
 
 static PluginLogFunc g_log = nullptr;
 static PluginSendMessageFunc g_send_msg = nullptr;
+static PluginPostFileFunc g_post_file = nullptr;
 static std::string data_dir;
 
 extern "C" __declspec(dllexport) int plugin_init(const PluginInitParams* params) {
     g_log = params->log_func;
     g_send_msg = params->send_msg_func;
+    g_post_file = params->post_file_func;
     data_dir = params->data_path;        // 自己的数据目录
     if (g_log) g_log("info", "MyPlugin loaded");
     return 0;                            // 0 = 加载成功
@@ -219,9 +223,10 @@ extern "C" __declspec(dllexport) int plugin_init(const PluginInitParams* params)
 extern "C" __declspec(dllexport) int plugin_handle_message(const PluginMessage* msg) {
     if (!msg) return 0;
     if (msg->is_group && msg->group_openid) {
-        g_send_msg(msg->group_openid, "Hello from plugin!", 1);
+        g_send_msg(msg->group_openid, "Hello from plugin!", 1, "", 0, "");
     } else if (!msg->is_group && msg->openid) {
-        g_send_msg(msg->openid, "Hello from plugin!", 0);
+        g_send_msg(msg->openid, "Hello from plugin!", 0, "", 0, "");
+        // 发送文件示例: g_post_file(msg->openid, "https://example.com/image.jpg", 1, 0, 0);
     }
     return 1;                            // 1 = 拦截，不再向下传递
 }
@@ -269,10 +274,26 @@ extern "C" __declspec(dllexport) const char* plugin_get_description() { return "
 
 ### 消息回复 API
 
-插件调用 `send_msg_func(target_id, content, is_group)`：
+插件调用 `send_msg_func(target_id, content, is_group, msg_id, msg_type, media)`：
 
 - 私聊：POST `/v2/users/{openid}/messages`
 - 群聊：POST `/v2/groups/{group_openid}/messages`
+- `msg_id`：群@消息被动回复必填，私聊可传空字符串
+- `msg_type`：消息类型，0=文本 2=Markdown 3=Ark消息 4=Embed消息 7=Media
+- `media`：媒体文件信息，文本消息可传空字符串
+
+### 文件发送 API
+
+插件调用 `post_file_func(target_id, url, file_type, is_group, srv_send_msg)`：
+
+- 私聊文件：POST `/v2/users/{openid}/files`
+- 群聊文件：POST `/v2/groups/{group_openid}/files`
+- `target_id`：对方 openid（私聊）或群 openid（群聊）
+- `url`：文件 URL 地址
+- `file_type`：文件类型（1=图片, 2=视频, 3=音频, 4=文件）
+- `is_group`：1=群聊, 0=私聊
+- `srv_send_msg`：是否由服务端直接发送消息，1=是, 0=否
+- 返回值：QQ 平台返回的 JSON 字符串（失败返回空字符串）
 
 ### 线程安全
 

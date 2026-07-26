@@ -78,11 +78,17 @@ public:
     void run(const std::string& appid, const std::string& secret, int worker_count = 4);
     void stop();
     
-    bool send_c2c_message(const std::string& openid, const std::string& content, const std::string& msg_id = "") {
-        return _send_c2c_message(openid, content, msg_id);
+    bool send_c2c_message(const std::string& openid, const std::string& content, const std::string& msg_id = "", int msg_type = 0, const std::string& media = "") {
+        return _send_c2c_message(openid, content, msg_id, msg_type, media);
     }
-    bool send_group_message(const std::string& group_openid, const std::string& content, const std::string& msg_id = "") {
-        return _send_group_message(group_openid, content, msg_id);
+    bool send_group_message(const std::string& group_openid, const std::string& content, const std::string& msg_id = "", int msg_type = 0, const std::string& media = "") {
+        return _send_group_message(group_openid, content, msg_id, msg_type, media);
+    }
+    std::string post_c2c_file(const std::string& openid, const std::string& url, int file_type, bool srv_send_msg = false) {
+        return _post_c2c_file(openid, url, file_type, srv_send_msg);
+    }
+    std::string post_group_file(const std::string& group_openid, const std::string& url, int file_type, bool srv_send_msg = false) {
+        return _post_group_file(group_openid, url, file_type, srv_send_msg);
     }
     
     std::vector<PluginInstance> get_plugins() { return m_plugin_manager.get_plugins(); }
@@ -116,9 +122,11 @@ private:
     void _stop_worker_pool();
     void _process_message_task(const MessageTask& task);
 
-    bool _send_c2c_message(const std::string& openid, const std::string& content, const std::string& msg_id = "");
-    bool _send_group_message(const std::string& group_openid, const std::string& content, const std::string& msg_id = "");
-    std::string _build_msg_json(const std::string& content, const std::string& msg_id = "");
+    bool _send_c2c_message(const std::string& openid, const std::string& content, const std::string& msg_id = "", int msg_type = 0, const std::string& media = "");
+    bool _send_group_message(const std::string& group_openid, const std::string& content, const std::string& msg_id = "", int msg_type = 0, const std::string& media = "");
+    std::string _post_c2c_file(const std::string& openid, const std::string& url, int file_type, bool srv_send_msg = false);
+    std::string _post_group_file(const std::string& group_openid, const std::string& url, int file_type, bool srv_send_msg = false);
+    std::string _build_msg_json(const std::string& content, const std::string& msg_id = "", int msg_type = 0, const std::string& media = "");
     
     void log(const std::string& level, const std::string& msg);
 

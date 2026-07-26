@@ -5,7 +5,8 @@ extern "C" {
 #endif
 
 typedef void (*PluginLogFunc)(const char* level, const char* msg);
-typedef int (*PluginSendMessageFunc)(const char* target_id, const char* content, int is_group, const char* msg_id);
+typedef int (*PluginSendMessageFunc)(const char* target_id, const char* content, int is_group, const char* msg_id, int msg_type, const char* media);
+typedef const char* (*PluginPostFileFunc)(const char* target_id, const char* url, int file_type, int is_group, int srv_send_msg);
 
 typedef struct {
     const char* id;
@@ -20,6 +21,7 @@ typedef struct {
 typedef struct {
     PluginLogFunc log_func;
     PluginSendMessageFunc send_msg_func;
+    PluginPostFileFunc post_file_func;
     const char* appid;
     const char* data_path;
 } PluginInitParams;

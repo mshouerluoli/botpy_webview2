@@ -26,16 +26,29 @@ extern "C" void plugin_log_wrapper(const char* level, const char* msg) {
 
 static MyClient* g_client = nullptr;
 
-extern "C" int plugin_send_message_wrapper(const char* target_id, const char* content, int is_group, const char* msg_id) {
-    if (!g_client || !target_id || !content) return 0;
+extern "C" int plugin_send_message_wrapper(const char* target_id, const char* content, int is_group, const char* msg_id, int msg_type, const char* media) {
+    if (!g_client || !target_id) return 0;
     std::string s_msg_id = msg_id ? msg_id : "";
+    std::string s_content = content ? content : "";
+    std::string s_media = media ? media : "";
     bool result;
     if (is_group) {
-        result = g_client->send_group_message(target_id, content, s_msg_id);
+        result = g_client->send_group_message(target_id, s_content, s_msg_id, msg_type, s_media);
     } else {
-        result = g_client->send_c2c_message(target_id, content, s_msg_id);
+        result = g_client->send_c2c_message(target_id, s_content, s_msg_id, msg_type, s_media);
     }
     return result ? 1 : 0;
+}
+
+extern "C" const char* plugin_post_file_wrapper(const char* target_id, const char* url, int file_type, int is_group, int srv_send_msg) {
+    if (!g_client || !target_id || !url) return "";
+    static std::string result;
+    if (is_group) {
+        result = g_client->post_group_file(target_id, url, file_type, srv_send_msg != 0);
+    } else {
+        result = g_client->post_c2c_file(target_id, url, file_type, srv_send_msg != 0);
+    }
+    return result.c_str();
 }
 
 static std::string get_log_path() {
@@ -418,17 +431,27 @@ void MyClient::_handle_event(const std::string& event_json) {
     }
 }
 
-std::string MyClient::_build_msg_json(const std::string& content, const std::string& msg_id) {
+std::string MyClient::_build_msg_json(const std::string& content, const std::string& msg_id, int msg_type, const std::string& media) {
     json j;
-    j["content"] = content;
-    j["msg_type"] = 0;
+    j["msg_type"] = msg_type;
+    if (!content.empty()) {
+        j["content"] = content;
+    }
     if (!msg_id.empty()) {
         j["msg_id"] = msg_id;
+    }
+    if (!media.empty()) {
+        try {
+            json media_json = json::parse(media);
+            j["media"] = media_json;
+        } catch (...) {
+            j["media"] = media;
+        }
     }
     return j.dump();
 }
 
-bool MyClient::_send_c2c_message(const std::string& openid, const std::string& content, const std::string& msg_id) {
+bool MyClient::_send_c2c_message(const std::string& openid, const std::string& content, const std::string& msg_id, int msg_type, const std::string& media) {
     if (m_token.empty() || openid.empty()) return false;
 
     RestClient::Request request;
@@ -436,8 +459,9 @@ bool MyClient::_send_c2c_message(const std::string& openid, const std::string& c
     request.headers["Content-Type"] = "application/json";
 
     std::string url = "https://api.sgroup.qq.com/v2/users/" + openid + "/messages";
-    std::string body = _build_msg_json(content, msg_id);
+    std::string body = _build_msg_json(content, msg_id, msg_type, media);
 
+    log("info", "Send C2C msg: type=" + std::to_string(msg_type) + ", media=" + media);
     RestClient::Response response = RestClient::post(url, "application/json", body, &request);
 
     if (response.code == 0 || response.body.empty()) {
@@ -453,7 +477,7 @@ bool MyClient::_send_c2c_message(const std::string& openid, const std::string& c
     return true;
 }
 
-bool MyClient::_send_group_message(const std::string& group_openid, const std::string& content, const std::string& msg_id) {
+bool MyClient::_send_group_message(const std::string& group_openid, const std::string& content, const std::string& msg_id, int msg_type, const std::string& media) {
     if (m_token.empty() || group_openid.empty()) return false;
 
     RestClient::Request request;
@@ -461,8 +485,9 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
     request.headers["Content-Type"] = "application/json";
 
     std::string url = "https://api.sgroup.qq.com/v2/groups/" + group_openid + "/messages";
-    std::string body = _build_msg_json(content, msg_id);
+    std::string body = _build_msg_json(content, msg_id, msg_type, media);
 
+    log("info", "Send group msg: type=" + std::to_string(msg_type) + ", media=" + media);
     RestClient::Response response = RestClient::post(url, "application/json", body, &request);
 
     if (response.code == 0 || response.body.empty()) {
@@ -476,6 +501,65 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
         return false;
     }
     return true;
+}
+
+std::string MyClient::_post_c2c_file(const std::string& openid, const std::string& url, int file_type, bool srv_send_msg) {
+    if (m_token.empty() || openid.empty() || url.empty()) return "";
+
+    json j;
+    j["file_type"] = file_type;
+    j["url"] = url;
+    j["srv_send_msg"] = srv_send_msg;
+    std::string body = j.dump();
+
+    RestClient::Request request;
+    request.headers["Authorization"] = "QQBot " + m_token;
+    request.headers["Content-Type"] = "application/json";
+
+    std::string api_url = "https://api.sgroup.qq.com/v2/users/" + openid + "/files";
+    log("info", "Post C2C file: url=" + url + ", file_type=" + std::to_string(file_type));
+    RestClient::Response response = RestClient::post(api_url, "application/json", body, &request);
+
+    if (response.code == 0 || response.body.empty()) {
+        log("error", "Failed to post C2C file, code: " + std::to_string(response.code));
+        return "";
+    }
+    if (response.code < 200 || response.code >= 300) {
+        log("error", "C2C file upload failed: HTTP " + std::to_string(response.code) + ", body=" + response.body);
+        return "";
+    }
+
+    log("info", "C2C file upload response: " + response.body);
+    return response.body;
+}
+
+std::string MyClient::_post_group_file(const std::string& group_openid, const std::string& url, int file_type, bool srv_send_msg) {
+    if (m_token.empty() || group_openid.empty() || url.empty()) return "";
+
+    json j;
+    j["file_type"] = file_type;
+    j["url"] = url;
+    j["srv_send_msg"] = srv_send_msg;
+    std::string body = j.dump();
+
+    RestClient::Request request;
+    request.headers["Authorization"] = "QQBot " + m_token;
+    request.headers["Content-Type"] = "application/json";
+
+    std::string api_url = "https://api.sgroup.qq.com/v2/groups/" + group_openid + "/files";
+    RestClient::Response response = RestClient::post(api_url, "application/json", body, &request);
+
+    if (response.code == 0 || response.body.empty()) {
+        log("error", "Failed to post group file, code: " + std::to_string(response.code));
+        return "";
+    }
+    if (response.code < 200 || response.code >= 300) {
+        log("error", "Group file upload failed: HTTP " + std::to_string(response.code) + ", body=" + response.body);
+        return "";
+    }
+
+    log("info", "Group file upload response: " + response.body);
+    return response.body;
 }
 
 void MyClient::on_ready() {
@@ -708,6 +792,7 @@ void PluginManager::load_plugins(const std::string& appid) {
                 PluginInitParams params;
                 params.log_func = plugin_log_wrapper;
                 params.send_msg_func = plugin_send_message_wrapper;
+                params.post_file_func = plugin_post_file_wrapper;
                 params.appid = appid.c_str();
                 params.data_path = plugin_data_path.c_str();
 
@@ -920,6 +1005,7 @@ bool PluginManager::reload_plugins(const std::string& appid) {
                 PluginInitParams params;
                 params.log_func = plugin_log_wrapper;
                 params.send_msg_func = plugin_send_message_wrapper;
+                params.post_file_func = plugin_post_file_wrapper;
                 params.appid = appid.c_str();
                 params.data_path = plugin_data_path.c_str();
 
