@@ -152,10 +152,19 @@ bool MyClient::_authenticate() {
     log("info", "Authenticating with appid: " + m_appid);
     
     std::string body = R"({"appId":")" + m_appid + R"(","clientSecret":")" + m_secret + R"("})";
+    log("info", "Auth request body: " + body);
     RestClient::Response response = RestClient::post("https://api.bot.qq.com/app/getAppAccessToken", "application/json", body);
     
-    if (response.code == 0 || response.body.empty()) {
-        log("error", "Authentication request failed");
+    if (response.code == 0) {
+        log("error", "Authentication request failed: HTTP code 0 (network/connection error)");
+        return false;
+    }
+    if (response.code < 200 || response.code >= 300) {
+        log("error", "Authentication HTTP error: " + std::to_string(response.code) + ", body: " + response.body);
+        return false;
+    }
+    if (response.body.empty()) {
+        log("error", "Authentication response body is empty");
         return false;
     }
     
@@ -436,6 +445,9 @@ std::string MyClient::_build_msg_json(const std::string& content, const std::str
     j["msg_type"] = msg_type;
     if (!content.empty()) {
         j["content"] = content;
+    } else {
+        log("warning", "_build_msg_json: content is empty! msg_type=" + std::to_string(msg_type) +
+                     ", msg_id=" + msg_id);
     }
     if (!msg_id.empty()) {
         j["msg_id"] = msg_id;
@@ -459,6 +471,12 @@ bool MyClient::_send_c2c_message(const std::string& openid, const std::string& c
     request.headers["Content-Type"] = "application/json";
     std::string url = "https://api.sgroup.qq.com/v2/users/" + openid + "/messages";
     std::string body = _build_msg_json(content, msg_id, msg_type, media);
+
+    for (size_t i = 0; i < body.size() && i < 200; ++i) {
+        char c = body[i];
+        if (c == '\n') log("info", "C2C body has raw \\n at pos " + std::to_string(i));
+        if (c == '\r') log("info", "C2C body has raw \\r at pos " + std::to_string(i));
+    }
     RestClient::Response response = RestClient::post(url, "application/json", body, &request);
 
     if (response.code == 0 || response.body.empty()) {
@@ -484,7 +502,6 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
     std::string url = "https://api.sgroup.qq.com/v2/groups/" + group_openid + "/messages";
     std::string body = _build_msg_json(content, msg_id, msg_type, media);
 
-    log("info", "Send group msg: type=" + std::to_string(msg_type) + ", media=" + media);
     RestClient::Response response = RestClient::post(url, "application/json", body, &request);
 
     if (response.code == 0 || response.body.empty()) {
@@ -565,11 +582,18 @@ void MyClient::on_ready() {
     if (on_info) on_info("sessionId", m_session_id);
     if (on_info && !m_nickname.empty()) on_info("nickname", m_nickname);
 }
-
+std::string stringToHex(const std::string& input) {
+    std::stringstream hexStream;
+    hexStream << std::hex << std::setfill('0');
+    for (unsigned char c : input) {
+        hexStream << std::setw(2) << (int)c;
+    }
+    return hexStream.str();
+}
 void MyClient::_handle_common_commands(const Message& message, bool message_isgroup) {
     m_message_count++;
     if (on_info) on_info("msgCount", std::to_string(m_message_count.load()));
-    
+
     MessageTask task;
     task.id = message.id;
     task.content = message.content;

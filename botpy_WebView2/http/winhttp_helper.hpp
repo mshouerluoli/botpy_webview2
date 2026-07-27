@@ -271,7 +271,7 @@ namespace winhttp
 			//build http headers
 			std::string strHeaders;
 			for (auto &k : m_RequestHeaders)
-				strHeaders.append(k.first).append(": ").append(k.second).append("\n");
+				strHeaders.append(k.first).append(": ").append(k.second).append("\r\n");
 			m_RequestHeaders.clear();
 
 			textconv_helper::A2W_ tempHeaders(strHeaders.c_str());
