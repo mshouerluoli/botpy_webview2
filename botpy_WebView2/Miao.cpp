@@ -582,14 +582,7 @@ void MyClient::on_ready() {
     if (on_info) on_info("sessionId", m_session_id);
     if (on_info && !m_nickname.empty()) on_info("nickname", m_nickname);
 }
-std::string stringToHex(const std::string& input) {
-    std::stringstream hexStream;
-    hexStream << std::hex << std::setfill('0');
-    for (unsigned char c : input) {
-        hexStream << std::setw(2) << (int)c;
-    }
-    return hexStream.str();
-}
+
 void MyClient::_handle_common_commands(const Message& message, bool message_isgroup) {
     m_message_count++;
     if (on_info) on_info("msgCount", std::to_string(m_message_count.load()));
