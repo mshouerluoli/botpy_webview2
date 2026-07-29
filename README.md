@@ -1,40 +1,67 @@
 # 🐱 Miao Bot (botpy_WebView2)
 
-基于 C++ 和 WebView2 开发的 QQ 机器人客户端，通过 WebSocket 连接 QQ 官方机器人网关，提供桌面 GUI 界面实时展示运行状态和日志，并内置**插件系统**支持动态加载第三方功能模块。
+基于 C++ 开发的 QQ 机器人客户端，通过 WebSocket 连接 QQ 官方机器人网关，提供 GUI 界面实时展示运行状态和日志，并内置**插件系统**支持动态加载第三方功能模块。
+
+本项目提供**两个版本**，共享同一套核心逻辑与插件 API，仅界面渲染层不同，可根据部署环境选择：
+
+## 📦 版本说明
+
+| 版本 | 路径 | 界面技术 | WebView2 依赖 | 适用场景 |
+|------|------|----------|---------------|----------|
+| **桌面版** | `botpy_WebView2/` | WebView2 + HTML/CSS/JS | ✅ 需要 | 个人桌面、开发调试，追求现代毛玻璃 UI |
+| **服务器版** | `ServerVersion/Botpy_WindowEx/` | 原生 Win32 GDI 控件 | ❌ 无需 | 服务器 / 无 WebView2 Runtime 的精简环境 |
+
+### 桌面版（botpy_WebView2）
+
+- 使用 WebView2 渲染 HTML/CSS/JS 界面，毛玻璃质感 + 渐变光晕的现代暗色主题
+- HTML 以 RCDATA 资源嵌入 EXE，启动时自动释放到 `ui/index.html`
+- 需要目标机器预装 WebView2 Runtime（Windows 10/11 通常已预装）
+- C++17
+
+### 服务器版（Botpy_WindowEx）
+
+- 使用**原生 Win32 控件 + GDI 自绘**实现界面（RichEdit 日志框、TabControl 标签页、自绘侧边栏与插件卡片）
+- **不依赖 WebView2 Runtime**，单文件 EXE 即可运行，适合服务器或精简部署环境
+- 主题颜色在 C++ 代码中硬编码（`ThemeColors` 结构体），无需外部 HTML 资源
+- 额外包含 `http/winnet_helper.hpp`（WinINet 辅助库）
+- C++20
+- 与桌面版共享 `Miao.cpp`、`message_queue.h`、`plugin_api.h`、`http/`、`websocket/` 等核心代码，**插件 DLL 完全通用**
+
+> 两个版本的 `config.yaml` 格式、`plugins/` 与 `plugin_data/` 目录约定、插件导出函数签名完全一致，插件无需为不同版本单独编译。
 
 ## ✨ 功能特性
 
-- **桌面 GUI 界面**：使用 WebView2 渲染 HTML/CSS/JS 界面，采用毛玻璃质感 + 渐变光晕的现代暗色主题
+- **GUI 界面**：桌面版使用 WebView2 渲染 HTML/CSS/JS（毛玻璃质感 + 渐变光晕的现代暗色主题）；服务器版使用原生 Win32 GDI 自绘界面，无 WebView2 依赖
 - **WebSocket 通信**：基于 WinHttpWebSocket API 连接 QQ 机器人网关
 - **自动重连**：连接断开后自动重新认证并重连，无需人工干预
 - **心跳保活**：定时发送心跳包，检测连接状态，超时自动重连
 - **消息处理**：支持私聊消息（C2C_MESSAGE_CREATE）和群@消息（GROUP_AT_MESSAGE_CREATE）
 - **文件发送**：支持向私聊和群聊发送图片、视频、音频、文件（通过 URL 上传）
 - **实时日志**：所有运行日志、状态变化、收发消息实时显示在 UI 中，自动换行、横向滚动条隐藏
-- **资源嵌入**：HTML 界面以 RCDATA 资源形式嵌入 EXE，启动时自动释放，无需额外文件
+- **资源嵌入**（桌面版）：HTML 界面以 RCDATA 资源形式嵌入 EXE，启动时自动释放，无需额外文件
 - **⚡ 多线程消息处理**：基于消息队列 + 工作线程池的生产者-消费者模型，4 个工作线程并发处理消息，高并发下不阻塞 WebSocket 接收
 - **🔌 插件系统**：支持动态加载 DLL 插件，提供独立的插件数据目录、优先级调度、消息拦截机制，可在 UI 中启用/停用/卸载/重载
 
 ## 🛠️ 技术栈
 
-| 组件 | 技术 |
-|------|------|
-| 语言 | C++ (C++17) |
-| UI | WebView2 + HTML/CSS/JS |
-| WebSocket | WinHttpWebSocket API |
-| HTTP | WinHTTP |
-| JSON | nlohmann/json |
-| 插件接口 | C ABI（DLL 导出函数） |
-| 构建 | Visual Studio 2022 |
-| 平台 | Windows (x64) |
+| 组件 | 桌面版 | 服务器版 |
+|------|--------|----------|
+| 语言 | C++ (C++17) | C++ (C++20) |
+| UI | WebView2 + HTML/CSS/JS | 原生 Win32 控件 + GDI 自绘 |
+| WebSocket | WinHttpWebSocket API | WinHttpWebSocket API |
+| HTTP | WinHTTP | WinHTTP（含 WinINet 辅助） |
+| JSON | nlohmann/json | nlohmann/json |
+| 插件接口 | C ABI（DLL 导出函数） | C ABI（DLL 导出函数） |
+| 构建 | Visual Studio 2022 | Visual Studio 2022 |
+| 平台 | Windows (x64) | Windows (x64) |
 
 ## 📁 项目结构
 
 ```
 botpy_WebView2/
-├── botpy_WebView2.slnx              # 解决方案文件
+├── botpy_WebView2.slnx              # 桌面版解决方案文件
 ├── Miao.py                          # Python 参考脚本
-├── botpy_WebView2/                  # 主程序
+├── botpy_WebView2/                  # 🖥️ 桌面版主程序（WebView2）
 │   ├── botpy_WebView2.vcxproj       # VS 项目文件
 │   ├── botpy_WebView2.rc            # 资源文件（嵌入 HTML）
 │   ├── resource.h                   # 资源头文件
@@ -53,6 +80,26 @@ botpy_WebView2/
 │   │   └── textconv_helper.hpp      # 文本编码转换
 │   └── websocket/
 │       └── websocket.h/cpp          # WebSocket 底层封装
+├── ServerVersion/
+│   └── Botpy_WindowEx/              # 🖥️ 服务器版（原生 Win32 GDI，无 WebView2 依赖）
+│       ├── Botpy_WindowEx.slnx      # 服务器版解决方案文件
+│       └── Botpy_WindowEx/
+│           ├── Botpy_WindowEx.vcxproj
+│           ├── main.cpp             # 入口（WinMain）
+│           ├── MainWindow.h/cpp     # 原生 Win32 窗口 + GDI 自绘界面
+│           ├── Miao.h/cpp           # 核心逻辑（与桌面版同源）
+│           ├── plugin_api.h         # 插件 API（与桌面版同源）
+│           ├── message_queue.h      # 消息队列（与桌面版同源）
+│           ├── resource.h
+│           ├── json.hpp
+│           ├── http/
+│           │   ├── websocket_client.hpp/cpp
+│           │   ├── winhttp_helper.hpp
+│           │   ├── winnet_helper.hpp # WinINet 辅助（服务器版独有）
+│           │   ├── restclient.hpp
+│           │   └── textconv_helper.hpp
+│           └── websocket/
+│               └── websocket.h/cpp
 └── sdk/
     └── botpy_sdk/                   # 🔌 插件 SDK（示例插件工程）
         ├── botpy_sdk.slnx
@@ -78,25 +125,34 @@ worker_count: 4    # 可选，工作线程数，默认 4，范围 1~64
 ### 编译要求
 
 - Visual Studio 2022（含 C++ 桌面开发工作负载）
-- WebView2 Runtime（Windows 10/11 通常已预装）
 - Windows SDK
+- 桌面版另需：WebView2 Runtime（Windows 10/11 通常已预装）+ WebView2 SDK（`WebView2.h`）
+- 服务器版：无 WebView2 依赖
 
 ### 编译步骤
+
+**桌面版（botpy_WebView2）**
 
 1. 用 Visual Studio 打开 `botpy_WebView2.slnx`
 2. 选择 `Release` | `x64` 配置
 3. 生成解决方案（`Ctrl+Shift+B`）
 
+**服务器版（Botpy_WindowEx）**
+
+1. 用 Visual Studio 打开 `ServerVersion/Botpy_WindowEx/Botpy_WindowEx.slnx`
+2. 选择 `Release` | `x64` 配置
+3. 生成解决方案（`Ctrl+Shift+B`）
+
 ### 运行步骤
 
-1. 将生成的 `botpy_WebView2.exe` 复制到任意目录
+1. 将生成的 EXE（桌面版 `botpy_WebView2.exe` 或服务器版 `Botpy_WindowEx.exe`）复制到任意目录
 2. 在同目录下创建 `config.yaml` 并填入 AppID 和 Secret
-3. 运行 `botpy_WebView2.exe`
+3. 运行对应的 EXE
 
 程序启动后会自动：
 
-- 从资源中释放 `ui/index.html` 到运行目录的 `ui/` 子目录
-- 初始化 WebView2 并加载界面
+- （桌面版）从资源中释放 `ui/index.html` 到运行目录的 `ui/` 子目录，并初始化 WebView2 加载界面
+- （服务器版）创建原生 Win32 窗口并自绘界面
 - 读取 `config.yaml` 配置
 - 创建 `plugins/` 与 `plugin_data/` 目录（不存在时）
 - 加载 `plugins/` 下所有插件 DLL
@@ -104,7 +160,7 @@ worker_count: 4    # 可选，工作线程数，默认 4，范围 1~64
 
 ## 🖥️ 界面说明
 
-界面采用暗色毛玻璃风格，分为左侧信息栏和右侧标签页区。
+界面采用暗色风格，分为左侧信息栏和右侧标签页区。两个版本界面布局一致，桌面版由 WebView2 渲染 HTML/CSS（毛玻璃质感 + 渐变光晕），服务器版由 Win32 GDI 自绘（实色暗色主题）。
 
 **机器人信息（侧边栏）**
 
@@ -136,7 +192,7 @@ Miao Bot 通过 C ABI 的 DLL 导出函数加载第三方插件，插件可接�
 
 ```
 <exe所在目录>/
-├── botpy_WebView2.exe
+├── botpy_WebView2.exe        # 或 Botpy_WindowEx.exe（服务器版）
 ├── config.yaml
 ├── plugins/                 # 插件 DLL 放这里
 │   ├── my_plugin.dll

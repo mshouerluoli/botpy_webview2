@@ -1,0 +1,11 @@
+# Miao Bot Configuration File
+# QQ机器人配置文件
+
+# 应用ID (从 https://q.qq.com 申请)
+appid: "your_app_id_here"
+
+# 应用密钥 (从 https://q.qq.com 申请)
+secret: "your_secret_here"
+
+# 工作线程数量 (1-64)
+worker_count: 4

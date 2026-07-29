@@ -2,7 +2,10 @@
 x64/
 botpy_WebView2/botpy_WebView2/
 botpy_WebView2/x64/
-
+ServerVersion\Botpy_WindowEx\.vs/
+ServerVersion\Botpy_WindowEx\x64/
+ServerVersion\Botpy_WindowEx\Botpy_WindowEx\Botpy_WindowEx/
+ServerVersion\Botpy_WindowEx\Botpy_WindowEx\x64/
 # NuGet 包
 packages/
 
