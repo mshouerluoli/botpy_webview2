@@ -1204,13 +1204,14 @@ void MainWindow::AppendLog(const std::wstring& message, const std::wstring& type
     // 获取当前文本长度
     int textLen = GetWindowTextLengthW(m_hLogEdit);
     
-    // 选择末尾
     SendMessage(m_hLogEdit, EM_SETSEL, textLen, textLen);
     
     // 追加文本
     SendMessage(m_hLogEdit, EM_REPLACESEL, FALSE, (LPARAM)logEntry.c_str());
     LimitLogLines(100);
     // 滚动到底部
+    textLen = GetWindowTextLengthW(m_hLogEdit);
+    SendMessage(m_hLogEdit, EM_SETSEL, textLen, textLen);
     SendMessage(m_hLogEdit, EM_SCROLLCARET, 0, 0);
 }
 
