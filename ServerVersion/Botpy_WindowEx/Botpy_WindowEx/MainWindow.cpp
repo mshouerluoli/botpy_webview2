@@ -1156,7 +1156,40 @@ void MainWindow::SetHeartbeatCount(int count) {
     m_heartbeatCount = count;
     InvalidateRect(m_hwnd, NULL, TRUE);
 }
+void MainWindow::LimitLogLines(int maxLines) {
+    // 获取所有文本
+    int textLen = GetWindowTextLengthW(m_hLogEdit);
+    if (textLen == 0) return;
 
+    std::wstring text(textLen, L'\0');
+    GetWindowTextW(m_hLogEdit, &text[0], textLen + 1);
+
+    // 统计行数
+    int lineCount = 0;
+    for (size_t i = 0; i < text.length(); ++i) {
+        if (text[i] == L'\n') lineCount++;
+    }
+
+    // 如果超过最大行数，删除最旧的行
+    if (lineCount > maxLines) {
+        // 找到需要删除的行数
+        int linesToDelete = lineCount - maxLines;
+        size_t deletePos = 0;
+
+        for (int i = 0; i < linesToDelete; ++i) {
+            size_t pos = text.find(L'\n', deletePos);
+            if (pos != std::wstring::npos) {
+                deletePos = pos + 1;  // 包含换行符
+            }
+        }
+
+        // 删除旧行
+        text.erase(0, deletePos);
+
+        // 更新控件
+        SetWindowTextW(m_hLogEdit, text.c_str());
+    }
+}
 void MainWindow::AppendLog(const std::wstring& message, const std::wstring& type) {
     if (!m_hLogEdit) return;
 
@@ -1176,7 +1209,7 @@ void MainWindow::AppendLog(const std::wstring& message, const std::wstring& type
     
     // 追加文本
     SendMessage(m_hLogEdit, EM_REPLACESEL, FALSE, (LPARAM)logEntry.c_str());
-
+    LimitLogLines(100);
     // 滚动到底部
     SendMessage(m_hLogEdit, EM_SCROLLCARET, 0, 0);
 }

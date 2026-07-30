@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="Botpy_WindowEx/Botpy_WindowEx.vcxproj" />
+  <Project Path="Botpy_WindowEx/Botpy_WindowEx.vcxproj" Id="b9ece11e-df60-459d-a3bc-e7f1768b4e14" />
 </Solution>

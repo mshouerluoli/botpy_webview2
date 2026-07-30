@@ -64,8 +64,23 @@ static std::string get_log_path() {
     if (pos != std::wstring::npos) {
         exe_dir_w = exe_dir_w.substr(0, pos);
     }
+
+    // 获取当前日期
+    time_t now = time(nullptr);
+    struct tm timeInfo = {};
+    localtime_s(&timeInfo, &now);
+
+    char dateStr[32];
+    strftime(dateStr, sizeof(dateStr), "%Y%m%d", &timeInfo);
+
+    // 构建完整路径
     std::string exe_dir(exe_dir_w.begin(), exe_dir_w.end());
-    return exe_dir + "/log.txt";
+
+    std::wstring log_dir = exe_dir_w + L"\\logs\\";
+
+    CreateDirectoryW(log_dir.c_str(), NULL);
+
+    return exe_dir + "/logs/" + dateStr + ".txt";
 }
 
 void MyClient::log(const std::string& level, const std::string& msg) {

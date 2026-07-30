@@ -89,6 +89,7 @@ public:
     void SetSessionId(const std::wstring& sessionId);
     void SetMessageCount(int count);
     void SetHeartbeatCount(int count);
+    void LimitLogLines(int maxLines);
     void AppendLog(const std::wstring& message, const std::wstring& type = L"info");
 
     // 机器人回调接口 (called from background thread, thread-safe)
