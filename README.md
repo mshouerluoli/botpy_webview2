@@ -27,7 +27,9 @@
 - C++20
 - 与桌面版共享 `Miao.cpp`、`message_queue.h`、`plugin_api.h`、`http/`、`websocket/` 等核心代码，**插件 DLL 完全通用**
 
-> 两个版本的 `config.yaml` 格式、`plugins/` 与 `plugin_data/` 目录约定、插件导出函数签名完全一致，插件无需为不同版本单独编译。
+> ⚠️ **开发主线说明**：若无特殊说明，**`ServerVersion/`（服务器版）才是最新主线版本**，包含最新的插件 API（`is_groupat` 字段、HTTP GET/POST 回调等）。桌面版 `botpy_WebView2/` 的代码与插件 API 暂未同步更新，可能落后于服务器版。本 README 中的**插件 API 说明、结构体定义、接口签名，如未单独标注，均以 `ServerVersion/Botpy_WindowEx/Botpy_WindowEx/plugin_api.h` 为准**。
+>
+> 两个版本的 `config.yaml` 格式、`plugins/` 与 `plugin_data/` 目录约定一致；但**旧桌面版缺少新增字段与回调**，若插件使用了新 API，需要在 `plugin_init` 中做空指针判断（如 `if (params->http_get_func) {...}`），以便兼容旧版宿主。
 
 ## ✨ 功能特性
 
@@ -206,7 +208,7 @@ Miao Bot 通过 C ABI 的 DLL 导出函数加载第三方插件，插件可接�
 
 ### 插件需要导出的函数
 
-在 [plugin_api.h](file:///D:/Vsyuanma/botpy_WebView2/botpy_WebView2/plugin_api.h) 中定义。**必选**导出：
+在 [ServerVersion/Botpy_WindowEx/Botpy_WindowEx/plugin_api.h](ServerVersion/Botpy_WindowEx/Botpy_WindowEx/plugin_api.h) 中定义（这是最新主线版本）。**必选**导出：
 
 | 函数签名 | 说明 |
 |---------|------|
@@ -233,17 +235,20 @@ typedef struct {
     const char* sender_id;    // 发送者 ID
     const char* channel_id;   // 频道 ID
     int is_group;             // 1=群消息, 0=私聊
+    int is_groupat;           // 1=群@消息（@机器人）, 0=普通群消息 / 私聊（ServerVersion 新增）
     const char* openid;       // 私聊对方 openid
     const char* group_openid; // 群 openid
 } PluginMessage;
 
 // 初始化时主程序传入的参数
 typedef struct {
-    PluginLogFunc log_func;        // 日志输出函数
-    PluginSendMessageFunc send_msg_func; // 发送消息函数
-    PluginPostFileFunc post_file_func;   // 发送文件函数
-    const char* appid;             // 当前机器人 AppID
-    const char* data_path;         // 插件专属数据目录路径
+    PluginLogFunc log_func;          // 日志输出函数
+    PluginSendMessageFunc send_msg_func;   // 发送消息函数
+    PluginPostFileFunc post_file_func;     // 发送文件函数
+    PluginHttpGetFunc http_get_func;       // HTTP GET 请求函数（ServerVersion 新增，旧版为 NULL，请做空指针判断）
+    PluginHttpPostFunc http_post_func;     // HTTP POST 请求函数（ServerVersion 新增，旧版为 NULL，请做空指针判断）
+    const char* appid;               // 当前机器人 AppID
+    const char* data_path;           // 插件专属数据目录路径
 } PluginInitParams;
 ```
 
@@ -256,35 +261,67 @@ typedef struct {
 
 ### 最小示例
 
-参见 [sdk/botpy_sdk/botpy_sdk/dllmain.cpp](file:///D:/Vsyuanma/botpy_WebView2/sdk/botpy_sdk/botpy_sdk/dllmain.cpp)。核心骨架：
+参见 [sdk/botpy_sdk/botpy_sdk/dllmain.cpp](sdk/botpy_sdk/botpy_sdk/dllmain.cpp)（完整版，含 HTTP GET/POST 封装与 `is_groupat` 判断）。核心骨架：
 
 ```c
 #include "plugin_api.h"
 #include <string>
 
-static PluginLogFunc g_log = nullptr;
+static PluginLogFunc        g_log       = nullptr;
 static PluginSendMessageFunc g_send_msg = nullptr;
-static PluginPostFileFunc g_post_file = nullptr;
+static PluginPostFileFunc   g_post_file = nullptr;
+// ServerVersion 新增 HTTP 回调（旧桌面版中保持 NULL，调用前必须判空）
+static PluginHttpGetFunc    g_http_get  = nullptr;
+static PluginHttpPostFunc   g_http_post = nullptr;
 static std::string data_dir;
 
 extern "C" __declspec(dllexport) int plugin_init(const PluginInitParams* params) {
-    g_log = params->log_func;
-    g_send_msg = params->send_msg_func;
+    g_log       = params->log_func;
+    g_send_msg  = params->send_msg_func;
     g_post_file = params->post_file_func;
-    data_dir = params->data_path;        // 自己的数据目录
-    if (g_log) g_log("info", "MyPlugin loaded");
+    g_http_get  = params->http_get_func;    // 可能为 NULL（旧桌面版）
+    g_http_post = params->http_post_func;   // 可能为 NULL（旧桌面版）
+    if (params->data_path) data_dir = params->data_path;
+    if (g_log) {
+        g_log("info", "MyPlugin loaded");
+        if (g_http_get)  g_log("info",  "HTTP GET API available");
+        else             g_log("warn",  "HTTP GET API NOT available (old desktop host?)");
+        if (g_http_post) g_log("info", "HTTP POST API available");
+        else             g_log("warn", "HTTP POST API NOT available (old desktop host?)");
+    }
     return 0;                            // 0 = 加载成功
 }
 
 extern "C" __declspec(dllexport) int plugin_handle_message(const PluginMessage* msg) {
     if (!msg) return 0;
+
+    // is_groupat：仅 ServerVersion 填充，1=群里有人 @ 了机器人
     if (msg->is_group && msg->group_openid) {
-        g_send_msg(msg->group_openid, "Hello from plugin!", 1, "", 0, "");
+        if (msg->is_groupat) {
+            // 群@被动回复：msg_id 必填（使用 msg->id）
+            g_send_msg(msg->group_openid, "群@回复示例", 1, msg->id, 0, "");
+        }
+
+        // HTTP GET 示例（调用前必须判空！）
+        if (g_http_get) {
+            const char* resp = g_http_get(
+                "https://httpbin.org/get",
+                "{\"User-Agent\":\"MyPlugin/1.0\"}");
+            // resp 为 JSON 字符串：{"success","status_code","body","error"}
+        }
+
+        // HTTP POST 示例（调用前必须判空！）
+        if (g_http_post) {
+            const char* resp = g_http_post(
+                "https://httpbin.org/post",
+                "{\"hello\":\"world\"}",
+                "{\"Content-Type\":\"application/json\"}");
+        }
     } else if (!msg->is_group && msg->openid) {
-        g_send_msg(msg->openid, "Hello from plugin!", 0, "", 0, "");
-        // 发送文件示例: g_post_file(msg->openid, "https://example.com/image.jpg", 1, 0, 0);
+        // 私聊：msg_id 可传空字符串
+        g_send_msg(msg->openid, "私聊回复示例", 0, "", 0, "");
     }
-    return 1;                            // 1 = 拦截，不再向下传递
+    return 0;                               // 0 = 放行，1 = 拦截不再向下传递
 }
 
 extern "C" __declspec(dllexport) void plugin_shutdown() {
@@ -294,8 +331,14 @@ extern "C" __declspec(dllexport) void plugin_shutdown() {
 extern "C" __declspec(dllexport) const char* plugin_get_name()        { return "MyPlugin"; }
 extern "C" __declspec(dllexport) int          plugin_get_priority()   { return 100; }
 extern "C" __declspec(dllexport) const char* plugin_get_author()      { return "Miaopasi"; }
-extern "C" __declspec(dllexport) const char* plugin_get_description() { return "示例插件"; }
+extern "C" __declspec(dllexport) const char* plugin_get_description() { return "示例插件（兼容新老宿主）"; }
 ```
+
+> **兼容性提示**：`is_groupat`、`http_get_func`、`http_post_func` 是 ServerVersion 的新增字段/回调。
+> 旧桌面版中 `PluginMessage.is_groupat` 字段所在内存位置不存在（结构体更小），因此**读取到的值是未定义的**；`params->http_get_func/http_post_func` 在旧宿主中为 `NULL`。
+> 如插件需要兼容两版宿主，请：
+> 1. HTTP 回调使用前先 `if (g_http_get) {...}` 判空再调用；
+> 2. `is_groupat` 仅在 `is_group==1` 时使用或自行做空值兼容判断。
 
 编译为 DLL 后放入 `plugins/` 目录，启动主程序即可自动加载；也可在「插件管理」标签页中热重载。
 
@@ -351,13 +394,61 @@ extern "C" __declspec(dllexport) const char* plugin_get_description() { return "
 - `srv_send_msg`：是否由服务端直接发送消息，1=是, 0=否
 - 返回值：QQ 平台返回的 JSON 字符串（失败返回空字符串）
 
+### HTTP 请求 API（ServerVersion 新增）
+
+插件调用 `http_get_func(url, headers_json)` 或 `http_post_func(url, data, headers_json)` 发起 HTTP 请求，**无需自己引入 libcurl / WinHTTP**。使用前需在 `plugin_init` 中做空指针判断（旧桌面版未实现此两回调，为 NULL）：
+
+```c
+PluginHttpGetFunc  http_get  = params->http_get_func;   // 若 NULL，旧宿主不支持
+PluginHttpPostFunc http_post = params->http_post_func;  // 若 NULL，旧宿主不支持
+```
+
+**参数**
+
+- `url`：请求 URL，必须非空
+- `data`：POST 请求 body（纯字符串），GET 请求忽略
+- `headers_json`：请求头 JSON 对象字符串，键值均为 string，如 `{"User-Agent":"BotSDK/1.0","Content-Type":"application/json"}`；传 `{}` 表示无额外头
+
+**返回值**（统一 JSON 字符串）
+
+返回 JSON 对象，可直接用 nlohmann/json 解析：
+
+```json
+{
+  "success":     true,    // bool，请求是否成功（网络层 + HTTP 层）
+  "status_code": 200,     // int，HTTP 状态码（失败时为 0）
+  "body":        "...",   // string，响应正文
+  "error":       ""       // string，错误信息（成功时为空）
+}
+```
+
+> 返回的 `const char*` 指向宿主内部静态 `std::string` 缓冲区，**插件端请勿释放**；若需要长期保存请自行拷贝。当参数非法（空 URL、headers_json 解析失败等），`success=false` 且 `error` 会给出提示。
+>
+> 若需兼容旧桌面版，调用前必须做空指针判断，否则旧宿主会因函数指针为 NULL 导致崩溃：
+>
+> ```c
+> if (g_http_get) {
+>     const char* resp = g_http_get("https://httpbin.org/get",
+>         "{\"User-Agent\":\"MyPlugin/1.0\"}");
+>     ...
+> } else {
+>     g_log("warn", "HTTP GET not supported by host (old desktop version?)");
+> }
+> ```
+
 ### 线程安全
 
-- WebView2 的 COM 调用只能在主线程进行，跨线程 UI 更新通过 `PostMessage` + 自定义消息（`WM_UILOG` / `WM_UISTATUS` / `WM_UIPLUGINS`）派发到主线程
-- 插件管理器内部使用 `std::mutex` 保护插件列表
+- 桌面版：WebView2 的 COM 调用只能在主线程进行，跨线程 UI 更新通过 `PostMessage` + 自定义消息（`WM_UILOG` / `WM_UISTATUS` / `WM_UIPLUGINS`）派发到主线程
+- 服务器版：同样通过 `PostMessage` + 自定义消息结构体（`UILogMsg` / `UIStatusMsg` / `UIPluginsMsg` 等）将工作线程的 UI 更新请求派发到主线程的 `WindowProc`，避免跨线程 GDI 操作
+- 两版插件管理器内部均使用 `std::mutex` 保护插件列表
 - 消息队列使用 `std::mutex + std::condition_variable` 实现线程安全的生产/消费
 - `m_message_count` 等计数使用 `std::atomic` 保证原子性
 - **插件开发者请注意**：`plugin_handle_message` 可能被多个工作线程**同时调用**，若插件内部有全局变量/共享状态，请自行加锁保护
+
+### 界面主题自定义
+
+- **桌面版**：直接编辑 `botpy_WebView2/ui/index.html` 中的 CSS，然后重新编译（HTML 会重新以资源形式嵌入 EXE）
+- **服务器版**：编辑 `ServerVersion/Botpy_WindowEx/Botpy_WindowEx/MainWindow.h` 中的 `ThemeColors` 结构体各字段，修改后重新编译即可生效（无需额外资源文件）
 
 ## 📄 许可证
 
