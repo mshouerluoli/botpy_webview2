@@ -574,9 +574,10 @@ void MyClient::_handle_event(const std::string& event_json) {
             }
             log("info", "Heartbeat interval: " + std::to_string(m_heartbeat_interval) + "ms");
             _send_identify();
-        } else if (op == 11) {
-            log("info", "Heartbeat ACK received");
-        }
+        } //else if (op == 11) {
+        //    //ÐÄÌø
+        //    log("info", "Heartbeat ACK received");
+        //}
     } catch (const std::exception& e) {
         log("error", std::string("JSON parse error: ") + e.what());
     }
