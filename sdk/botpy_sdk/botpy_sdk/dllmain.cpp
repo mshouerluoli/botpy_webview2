@@ -245,11 +245,11 @@ extern "C" __declspec(dllexport) int plugin_handle_message(const PluginMessage* 
     //}
 
     // HTTP API command triggers
-    //if (_strnicmp(content, "/httpget", 8) == 0) {
-    //    demo_http_get(msg);
-    //} else if (_strnicmp(content, "/httppost", 9) == 0) {
-    //    demo_http_post(msg);
-    //}
+    if (_strnicmp(content, "/httpget", 8) == 0) {
+        demo_http_get(msg);
+    } else if (_strnicmp(content, "/httppost", 9) == 0) {
+        demo_http_post(msg);
+    }
     if (msg->is_group) {
         //群聊
         if (msg->is_groupat) {
