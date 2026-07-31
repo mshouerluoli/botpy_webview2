@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="botpy_sdk/botpy_sdk.vcxproj" />
+  <Project Path="botpy_sdk/botpy_sdk.vcxproj" Id="9eaa2c58-8448-4f7a-ad99-d510e83b75f9" />
 </Solution>

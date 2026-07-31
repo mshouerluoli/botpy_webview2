@@ -1,6 +1,7 @@
 #include "Miao.h"
 #include "MainWindow.h"
 #include "json.hpp"
+#include "http/python_http_helper.hpp"
 #include <iostream>
 #include <fstream>
 #include <regex>
@@ -8,6 +9,8 @@
 #include <sstream>
 #include <cstring>
 #include <locale>
+#include <memory>
+#include <mutex>
 #include <windows.h>
 
 using json = nlohmann::json;
@@ -53,6 +56,97 @@ extern "C" const char* plugin_post_file_wrapper(const char* target_id, const cha
         result = g_client->post_c2c_file(target_id, url, file_type, srv_send_msg != 0);
     }
     return result.c_str();
+}
+
+static std::unique_ptr<PythonHttpClient> g_http_client;
+static std::mutex g_http_mutex;
+
+static PythonHttpClient* get_http_client() {
+    std::lock_guard<std::mutex> lock(g_http_mutex);
+    if (!g_http_client) {
+        try {
+            g_http_client = std::make_unique<PythonHttpClient>();
+        } catch (const std::exception& e) {
+            ui_log("error", std::string("Failed to create PythonHttpClient: ") + e.what());
+            return nullptr;
+        }
+    }
+    return g_http_client.get();
+}
+
+static bool parse_headers_json(const char* headers_json, std::map<std::string, std::string>& out_headers) {
+    if (!headers_json || !*headers_json) return true;
+    try {
+        json j = json::parse(headers_json);
+        if (!j.is_object()) return false;
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            if (it.value().is_string()) {
+                out_headers[it.key()] = it.value().get<std::string>();
+            }
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+extern "C" const char* plugin_http_get_wrapper(const char* url, const char* headers_json) {
+    static std::string result_str;
+    if (!url || !*url) {
+        result_str = "{\"success\":false,\"status_code\":0,\"body\":\"\",\"error\":\"url is empty\"}";
+        return result_str.c_str();
+    }
+    PythonHttpClient* client = get_http_client();
+    if (!client) {
+        result_str = "{\"success\":false,\"status_code\":0,\"body\":\"\",\"error\":\"PythonHttpClient not available\"}";
+        return result_str.c_str();
+    }
+    std::map<std::string, std::string> headers;
+    if (!parse_headers_json(headers_json, headers)) {
+        result_str = "{\"success\":false,\"status_code\":0,\"body\":\"\",\"error\":\"Invalid headers_json format\"}";
+        return result_str.c_str();
+    }
+    int status_code = 0;
+    std::string body;
+    std::string error_msg;
+    bool ok = client->Get(url, headers, status_code, body, error_msg);
+    json result;
+    result["success"] = ok;
+    result["status_code"] = status_code;
+    result["body"] = body;
+    result["error"] = error_msg;
+    result_str = result.dump();
+    return result_str.c_str();
+}
+
+extern "C" const char* plugin_http_post_wrapper(const char* url, const char* data, const char* headers_json) {
+    static std::string result_str;
+    if (!url || !*url) {
+        result_str = "{\"success\":false,\"status_code\":0,\"body\":\"\",\"error\":\"url is empty\"}";
+        return result_str.c_str();
+    }
+    PythonHttpClient* client = get_http_client();
+    if (!client) {
+        result_str = "{\"success\":false,\"status_code\":0,\"body\":\"\",\"error\":\"PythonHttpClient not available\"}";
+        return result_str.c_str();
+    }
+    std::map<std::string, std::string> headers;
+    if (!parse_headers_json(headers_json, headers)) {
+        result_str = "{\"success\":false,\"status_code\":0,\"body\":\"\",\"error\":\"Invalid headers_json format\"}";
+        return result_str.c_str();
+    }
+    std::string s_data = data ? data : "";
+    int status_code = 0;
+    std::string body;
+    std::string error_msg;
+    bool ok = client->Post(url, s_data, headers, status_code, body, error_msg);
+    json result;
+    result["success"] = ok;
+    result["status_code"] = status_code;
+    result["body"] = body;
+    result["error"] = error_msg;
+    result_str = result.dump();
+    return result_str.c_str();
 }
 
 static std::string get_log_path() {
@@ -865,6 +959,8 @@ void PluginManager::load_plugins(const std::string& appid) {
                 params.log_func = plugin_log_wrapper;
                 params.send_msg_func = plugin_send_message_wrapper;
                 params.post_file_func = plugin_post_file_wrapper;
+                params.http_get_func = plugin_http_get_wrapper;
+                params.http_post_func = plugin_http_post_wrapper;
                 params.appid = appid.c_str();
                 params.data_path = plugin_data_path.c_str();
 
@@ -1079,6 +1175,8 @@ bool PluginManager::reload_plugins(const std::string& appid) {
                 params.log_func = plugin_log_wrapper;
                 params.send_msg_func = plugin_send_message_wrapper;
                 params.post_file_func = plugin_post_file_wrapper;
+                params.http_get_func = plugin_http_get_wrapper;
+                params.http_post_func = plugin_http_post_wrapper;
                 params.appid = appid.c_str();
                 params.data_path = plugin_data_path.c_str();
 
