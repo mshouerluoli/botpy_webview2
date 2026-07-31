@@ -61,54 +61,70 @@
 
 ```
 botpy_WebView2/
-├── botpy_WebView2.slnx              # 桌面版解决方案文件
-├── Miao.py                          # Python 参考脚本
-├── botpy_WebView2/                  # 🖥️ 桌面版主程序（WebView2）
+├── README.md
+├── .gitignore
+├── 推送.bat                         # 部署/推送辅助脚本
+├── Miao.py                          # Python 参考脚本（对应协议与 API 流程）
+├── botpy_WebView2.slnx              # 🖥️ 桌面版解决方案（旧，暂未同步 ServerVersion 新 API）
+├── botpy_WebView2/                  # 桌面版主程序（WebView2 + HTML/CSS/JS）
 │   ├── botpy_WebView2.vcxproj       # VS 项目文件
-│   ├── botpy_WebView2.rc            # 资源文件（嵌入 HTML）
-│   ├── resource.h                   # 资源头文件
-│   ├── plugin_api.h                 # 🔌 插件 API 定义（插件与主程序共享）
-│   ├── message_queue.h              # ⚡ 线程安全的消息队列（工作线程池用）
-│   ├── MainWindow.h/cpp             # 主窗口及 WebView2 管理
-│   ├── Miao.h/cpp                   # 机器人客户端核心逻辑 + 插件管理器
-│   ├── webview_handlers.h/cpp       # WebView2 事件处理器
-│   ├── json.hpp                     # nlohmann/json 库
+│   ├── botpy_WebView2.vcxproj.filters
+│   ├── botpy_WebView2.rc            # 资源文件（嵌入 ui/index.html 为 RCDATA）
+│   ├── resource.h                   # 资源 ID 头文件
+│   ├── plugin_api.h                 # ⚠️ 插件 API（桌面版副本，较旧；以 ServerVersion/ 下的为主线）
+│   ├── message_queue.h              # ⚡ 线程安全消息队列（工作线程池用）
+│   ├── MainWindow.h / MainWindow.cpp         # 主窗口 + WebView2 初始化/管理
+│   ├── Miao.h / Miao.cpp                     # 机器人核心逻辑 + 插件管理器
+│   ├── webview_handlers.h / webview_handlers.cpp  # WebView2 事件（消息、导航等）
+│   ├── json.hpp                     # nlohmann/json（单头文件库）
 │   ├── ui/
-│   │   └── index.html               # 前端界面
+│   │   └── index.html               # 前端界面（桌面版独有，编译时嵌入 EXE）
 │   ├── http/
-│   │   ├── websocket_client.hpp/cpp # WebSocket 客户端
-│   │   ├── winhttp_helper.hpp       # WinHTTP 辅助
-│   │   ├── restclient.hpp           # REST API 客户端
-│   │   └── textconv_helper.hpp      # 文本编码转换
+│   │   ├── websocket_client.hpp / .cpp  # WebSocket 客户端（WinHttpWebSocket）
+│   │   ├── winhttp_helper.hpp           # WinHTTP 请求构造/发送辅助
+│   │   ├── winnet_helper.hpp            # WinINet 辅助库（LowBoyTeam）
+│   │   ├── restclient.hpp               # REST API 客户端高层封装
+│   │   └── textconv_helper.hpp          # 宽字节 / UTF-8 编码转换
 │   └── websocket/
-│       └── websocket.h/cpp          # WebSocket 底层封装
+│       ├── websocket.h  / .cpp          # WebSocket 帧打包/解包底层封装
+│
 ├── ServerVersion/
-│   └── Botpy_WindowEx/              # 🖥️ 服务器版（原生 Win32 GDI，无 WebView2 依赖）
-│       ├── Botpy_WindowEx.slnx      # 服务器版解决方案文件
+│   └── Botpy_WindowEx/              # 🌟 服务器版 / 最新主线（原生 Win32 GDI，无 WebView2 依赖）
+│       ├── Botpy_WindowEx.slnx      # 服务器版解决方案
 │       └── Botpy_WindowEx/
 │           ├── Botpy_WindowEx.vcxproj
-│           ├── main.cpp             # 入口（WinMain）
-│           ├── MainWindow.h/cpp     # 原生 Win32 窗口 + GDI 自绘界面
-│           ├── Miao.h/cpp           # 核心逻辑（与桌面版同源）
-│           ├── plugin_api.h         # 插件 API（与桌面版同源）
-│           ├── message_queue.h      # 消息队列（与桌面版同源）
+│           ├── Botpy_WindowEx.vcxproj.filters
+│           ├── main.cpp             # 入口（WinMain）：装配回调、启动 bot 线程、消息循环
+│           ├── MainWindow.h / MainWindow.cpp   # 原生 Win32 窗口 + GDI 自绘界面（ThemeColors 定义主题）
+│           ├── Miao.h / Miao.cpp               # 核心逻辑（含 plugin_http_get_wrapper / plugin_http_post_wrapper）
+│           ├── config.yaml          # 示例配置文件（开发期拷贝参考）
+│           ├── plugin_api.h         # 🌟 插件 API 主线副本（含 is_groupat、http_get/post_func）
+│           ├── message_queue.h      # 线程安全消息队列（同源）
 │           ├── resource.h
 │           ├── json.hpp
 │           ├── http/
-│           │   ├── websocket_client.hpp/cpp
+│           │   ├── websocket_client.hpp / .cpp
 │           │   ├── winhttp_helper.hpp
-│           │   ├── winnet_helper.hpp # WinINet 辅助（服务器版独有）
+│           │   ├── winnet_helper.hpp           # WinINet 辅助
+│           │   ├── python_http_helper.hpp      # 🌟 服务器版独有：PythonHttpClient（HTTP GET/POST 回调底层实现）
 │           │   ├── restclient.hpp
 │           │   └── textconv_helper.hpp
 │           └── websocket/
-│               └── websocket.h/cpp
+│               ├── websocket.h / .cpp
+│
 └── sdk/
     └── botpy_sdk/                   # 🔌 插件 SDK（示例插件工程）
         ├── botpy_sdk.slnx
         └── botpy_sdk/
-            ├── dllmain.cpp          # 示例插件实现
-            └── plugin_api.h         # 与主程序同源的 API 头文件
+            ├── botpy_sdk.vcxproj
+            ├── botpy_sdk.vcxproj.filters
+            ├── framework.h          # VS 默认预编译框架头
+            ├── dllmain.cpp          # 示例插件：导出 init/handle_message/shutdown、发送/HTTP 示例
+            ├── plugin_api.h         # 插件 API 头（编译插件使用，需与宿主保持一致）
+            └── json.hpp             # nlohmann/json（示例中用于解析 HTTP 回调返回值）
 ```
+
+> **关于版本与副本**：`plugin_api.h` / `Miao.*` 在桌面版、服务器版、SDK 下各有一份。若出现字段/签名不一致，**一律以 `ServerVersion/Botpy_WindowEx/Botpy_WindowEx/` 下的副本为最新主线**（见 [版本说明](#-版本说明) 中的开发主线提示）。
 
 ## 📋 配置说明
 
