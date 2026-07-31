@@ -1030,7 +1030,7 @@ void PluginManager::handle_message(const Message& message, bool is_group) {
             }
         }
     }
-    
+    //优先级从小到大排序
     std::sort(plugins_copy.begin(), plugins_copy.end(), [](const PluginInstance& a, const PluginInstance& b) {
         return a.priority < b.priority;
     });
