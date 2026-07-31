@@ -1277,10 +1277,11 @@ void MainWindow::PostInfo(const std::string& id, const std::string& value) {
     PostMessage(m_hwnd, WM_UI_INFO, 0, (LPARAM)uiMsg);
 }
 
-void MainWindow::PostMessageEvent(bool is_group, const std::string& content) {
+void MainWindow::PostMessageEvent(bool is_group, const std::string& username, const std::string& content) {
     if (m_windowDestroyed || !m_hwnd) return;
     UIMessageEventMsg* uiMsg = new UIMessageEventMsg();
     uiMsg->is_group = is_group;
+    uiMsg->username = username;
     uiMsg->content = content;
     PostMessage(m_hwnd, WM_UI_MESSAGE_EVENT, 0, (LPARAM)uiMsg);
 }
@@ -1341,8 +1342,9 @@ void MainWindow::HandleUIInfoMsg(UIInfoMsg* msg) {
 void MainWindow::HandleUIMessageEventMsg(UIMessageEventMsg* msg) {
     if (!msg) return;
     std::wstring prefix = msg->is_group ? L"[х╨] " : L"[к╫ад] ";
+    std::wstring wusername = SmartStringToWString(msg->username);
     std::wstring wcontent = SmartStringToWString(msg->content);
-    AppendLog(prefix + wcontent, L"message");
+    AppendLog(prefix + L"[" + wusername + L"] " + wcontent, L"message");
     SetMessageCount(m_messageCount + 1);
     delete msg;
 }

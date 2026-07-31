@@ -12,6 +12,7 @@ struct MessageTask {
     std::string sender_id;
     std::string channel_id;
     bool is_group;
+    bool is_groupat;
     std::string openid;
     std::string group_openid;
 };

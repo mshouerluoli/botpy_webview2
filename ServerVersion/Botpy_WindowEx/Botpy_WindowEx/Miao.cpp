@@ -14,7 +14,6 @@ using json = nlohmann::json;
 
 static MainWindow* g_main_window = nullptr;
 
-// 设置主窗口指针
 void SetMainWindowPointer(MainWindow* window) {
     g_main_window = window;
 }
@@ -65,7 +64,6 @@ static std::string get_log_path() {
         exe_dir_w = exe_dir_w.substr(0, pos);
     }
 
-    // 获取当前日期
     time_t now = time(nullptr);
     struct tm timeInfo = {};
     localtime_s(&timeInfo, &now);
@@ -73,7 +71,6 @@ static std::string get_log_path() {
     char dateStr[32];
     strftime(dateStr, sizeof(dateStr), "%Y%m%d", &timeInfo);
 
-    // 构建完整路径
     std::string exe_dir(exe_dir_w.begin(), exe_dir_w.end());
 
     std::wstring log_dir = exe_dir_w + L"\\logs\\";
@@ -310,7 +307,7 @@ void MyClient::_send_heartbeat() {
                 if (!send_result) {
                     log("error", "Failed to send heartbeat");
                     m_websocket_connected = false;
-                    if (on_status) on_status("connecting", "心跳失败，重启中...");
+                    if (on_status) on_status("connecting", "心跳失败,重连中...");
                     stop();
                     if (on_restart) on_restart();
                     return;
@@ -326,7 +323,7 @@ void MyClient::_send_heartbeat() {
         } else {
             if (m_running) {
                 log("warn", "WebSocket disconnected");
-                if (on_status) on_status("connecting", "断开连接，重启中...");
+                if (on_status) on_status("connecting", "心跳失败,重连中...");
                 stop();
                 if (on_restart) on_restart();
                 return;
@@ -394,7 +391,7 @@ void MyClient::_handle_event(const std::string& event_json) {
             if (j.contains("d") && j["d"].is_object()) {
                 d = j["d"];
             }
-
+            //log("d",d.dump());
             if (t == "READY") {
                 if (d.contains("session_id") && d["session_id"].is_string()) {
                     m_session_id = d["session_id"].get<std::string>();
@@ -420,10 +417,10 @@ void MyClient::_handle_event(const std::string& event_json) {
                     json author = d["author"];
                     if (author.contains("user_openid") && author["user_openid"].is_string()) {
                         cmsg.openid = author["user_openid"].get<std::string>();
+                        cmsg.username = cmsg.openid;
                     }
                 }
                 cmsg.sender_id = cmsg.openid;
-
                 on_c2c_message_create(cmsg);
             } else if (t == "GROUP_AT_MESSAGE_CREATE") {
                 GroupMessage gmsg;
@@ -433,6 +430,12 @@ void MyClient::_handle_event(const std::string& event_json) {
                 }
                 if (d.contains("content") && d["content"].is_string()) {
                     gmsg.content = d["content"].get<std::string>();
+                }
+                if (d.contains("author") && d["author"].is_object()) {
+                    auto& author = d["author"];
+                    if (author.contains("username") && author["username"].is_string()) {
+                        gmsg.username = author["username"].get<std::string>();
+                    }
                 }
                 if (d.contains("group_openid") && d["group_openid"].is_string()) {
                     gmsg.group_openid = d["group_openid"].get<std::string>();
@@ -444,6 +447,31 @@ void MyClient::_handle_event(const std::string& event_json) {
                     }
                 }
                 on_group_at_message_create(gmsg);
+            }else if (t == "GROUP_MESSAGE_CREATE") {
+                GroupMessage gmsg;
+                gmsg.is_group = true;
+                if (d.contains("id") && d["id"].is_string()) {
+                    gmsg.id = d["id"].get<std::string>();
+                }
+                if (d.contains("content") && d["content"].is_string()) {
+                    gmsg.content = d["content"].get<std::string>();
+                }
+                if (d.contains("author") && d["author"].is_object()) {
+                    auto& author = d["author"];
+                    if (author.contains("username") && author["username"].is_string()) {
+                        gmsg.username = author["username"].get<std::string>();
+                    }
+                }
+                if (d.contains("group_openid") && d["group_openid"].is_string()) {
+                    gmsg.group_openid = d["group_openid"].get<std::string>();
+                }
+                if (d.contains("author") && d["author"].is_object()) {
+                    json author = d["author"];
+                    if (author.contains("member_openid") && author["member_openid"].is_string()) {
+                        gmsg.sender_id = author["member_openid"].get<std::string>();
+                    }
+                }
+                on_group_message_create(gmsg);
             }
         } else if (op == 10) {
             json d = j["d"];
@@ -603,7 +631,7 @@ void MyClient::on_ready() {
     if (on_info && !m_nickname.empty()) on_info("nickname", m_nickname);
 }
 
-void MyClient::_handle_common_commands(const Message& message, bool message_isgroup) {
+void MyClient::_handle_common_commands(const Message& message, bool message_isgroup, bool message_isat) {
     m_message_count++;
     if (on_info) on_info("msgCount", std::to_string(m_message_count.load()));
 
@@ -613,6 +641,7 @@ void MyClient::_handle_common_commands(const Message& message, bool message_isgr
     task.sender_id = message.sender_id;
     task.channel_id = message.channel_id;
     task.is_group = message_isgroup;
+    task.is_groupat = message_isat;
     task.openid = message.openid;
     task.group_openid = message.group_openid;
     
@@ -627,6 +656,7 @@ void MyClient::_process_message_task(const MessageTask& task) {
     msg.channel_id = task.channel_id;
     msg.is_group = task.is_group;
     msg.openid = task.openid;
+    msg.is_groupat = task.is_groupat;
     msg.group_openid = task.group_openid;
     
     m_plugin_manager.handle_message(msg, task.is_group);
@@ -634,13 +664,17 @@ void MyClient::_process_message_task(const MessageTask& task) {
 
 
 void MyClient::on_c2c_message_create(const C2CMessage& message) {
-    if (on_message) on_message(false, message.content);
-    _handle_common_commands(message, false);
+    if (on_message) on_message(false, message.username, message.content);
+    _handle_common_commands(message, false,false);
 }
 
 void MyClient::on_group_at_message_create(const GroupMessage& message) {
-    if (on_message) on_message(true, message.content);
-    _handle_common_commands(message, true);
+    if (on_message) on_message(true, message.username, message.content);
+    _handle_common_commands(message, true,true);
+}
+void MyClient::on_group_message_create(const GroupMessage& message) {
+    if (on_message) on_message(true, message.username, message.content);
+    _handle_common_commands(message, true,false);
 }
 
 void MyClient::run(const std::string& appid, const std::string& secret, int worker_count) {
@@ -718,7 +752,7 @@ void MyClient::stop() {
     m_plugin_manager.unload_plugins();
     
     log("info", "Client stopped");
-    if (on_status) on_status("offline", "已断开");
+    if (on_status) on_status("offline", "????");
 }
 
 void MyClient::_start_worker_pool() {
@@ -913,6 +947,7 @@ void PluginManager::handle_message(const Message& message, bool is_group) {
             plugin_msg.sender_id = message.sender_id.c_str();
             plugin_msg.channel_id = message.channel_id.c_str();
             plugin_msg.is_group = is_group ? 1 : 0;
+            plugin_msg.is_groupat = message.is_groupat ? 1 : 0;
             plugin_msg.openid = message.openid.c_str();
             plugin_msg.group_openid = message.group_openid.c_str();
 

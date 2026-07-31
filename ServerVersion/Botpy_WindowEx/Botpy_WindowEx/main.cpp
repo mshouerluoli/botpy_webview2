@@ -55,8 +55,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR lpCmdLine, int nC
     client.on_info = [&window](const std::string& id, const std::string& value) {
         window.PostInfo(id, value);
     };
-    client.on_message = [&window](bool is_group, const std::string& content) {
-        window.PostMessageEvent(is_group, content);
+    client.on_message = [&window](bool is_group, const std::string& username, const std::string& content) {
+        window.PostMessageEvent(is_group, username,content);
     };
     client.on_restart = [&client, &config]() {
         std::this_thread::sleep_for(std::chrono::seconds(3));

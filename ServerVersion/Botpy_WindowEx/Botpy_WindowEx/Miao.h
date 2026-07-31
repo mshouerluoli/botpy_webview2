@@ -30,9 +30,11 @@ struct Config {
 struct Message {
     std::string id;
     std::string content;
+    std::string username;
     std::string sender_id;
     std::string channel_id;
     bool is_group;
+    bool is_groupat;
     std::string openid;
     std::string group_openid;
 };
@@ -105,13 +107,14 @@ public:
     std::function<void(const std::string& level, const std::string& msg)> on_log;
     std::function<void(const std::string& status, const std::string& text)> on_status;
     std::function<void(const std::string& id, const std::string& value)> on_info;
-    std::function<void(bool is_group, const std::string& content)> on_message;
+    std::function<void(bool is_group, const std::string& username, const std::string& content)> on_message;
     std::function<void()> on_restart;
 
 protected:
     virtual void on_ready();
     virtual void on_c2c_message_create(const C2CMessage& message);
     virtual void on_group_at_message_create(const GroupMessage& message);
+    virtual void on_group_message_create(const GroupMessage& message);
     
 private:
     bool _authenticate();
@@ -122,7 +125,7 @@ private:
     void _send_heartbeat();
     void _send_identify();
     void _handle_event(const std::string& event_json);
-    void _handle_common_commands(const Message& message, bool message_isgroup);
+    void _handle_common_commands(const Message& message, bool message_isgroup, bool message_isat);
     void _worker_thread();
     void _start_worker_pool();
     void _stop_worker_pool();

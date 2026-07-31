@@ -27,9 +27,17 @@ struct UIInfoMsg {
     std::string value;
 };
 
-struct UIMessageEventMsg {
-    bool is_group;
+struct UIMessageEventMsg  
+{
+    std::string id;
     std::string content;
+    std::string username;
+    std::string sender_id;
+    std::string channel_id;
+    bool is_group;
+    bool is_groupat;
+    std::string openid;
+    std::string group_openid;
 };
 
 struct UIPluginsMsg {
@@ -97,7 +105,7 @@ public:
     void PostLogUtf8(const std::string& level, const std::string& msg);
     void PostStatus(const std::string& status, const std::string& text);
     void PostInfo(const std::string& id, const std::string& value);
-    void PostMessageEvent(bool is_group, const std::string& content);
+    void PostMessageEvent(bool is_group, const std::string& username, const std::string& content);
     void PostPlugins(const std::string& json_str);
 
     // ÃüÁî´¦ÀíÆ÷

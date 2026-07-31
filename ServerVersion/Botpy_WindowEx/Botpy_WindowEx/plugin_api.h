@@ -14,6 +14,7 @@ typedef struct {
     const char* sender_id;
     const char* channel_id;
     int is_group;
+    int is_groupat;
     const char* openid;
     const char* group_openid;
 } PluginMessage;
