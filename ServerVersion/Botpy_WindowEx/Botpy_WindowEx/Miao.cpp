@@ -538,6 +538,26 @@ bool MyClient::_reconnect() {
     return true;
 }
 
+std::string remove_all_mentions(const std::string& content) {
+    std::string result = content;
+    size_t start = 0;
+
+    while (true) {
+        start = result.find("<@", start);
+        if (start == std::string::npos) break;
+
+        size_t end = result.find(">", start);
+        if (end == std::string::npos) break;
+
+        result.erase(start, end - start + 1);
+        if (!result.empty() && result[0] == ' ') {
+            result.erase(0, 1);
+        }
+    }
+
+    return result;
+}
+
 void MyClient::_handle_event(const std::string& event_json) {
     uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -563,7 +583,7 @@ void MyClient::_handle_event(const std::string& event_json) {
             if (j.contains("d") && j["d"].is_object()) {
                 d = j["d"];
             }
-            //log("d",d.dump());
+            //log("info",d.dump());
             if (t == "READY") {
                 if (d.contains("session_id") && d["session_id"].is_string()) {
                     m_session_id = d["session_id"].get<std::string>();
@@ -618,10 +638,12 @@ void MyClient::_handle_event(const std::string& event_json) {
                         gmsg.sender_id = author["member_openid"].get<std::string>();
                     }
                 }
+                gmsg.is_groupat = true;
                 on_group_at_message_create(gmsg);
             }else if (t == "GROUP_MESSAGE_CREATE") {
                 GroupMessage gmsg;
                 gmsg.is_group = true;
+                gmsg.is_groupat = false;
                 if (d.contains("id") && d["id"].is_string()) {
                     gmsg.id = d["id"].get<std::string>();
                 }
@@ -643,7 +665,21 @@ void MyClient::_handle_event(const std::string& event_json) {
                         gmsg.sender_id = author["member_openid"].get<std::string>();
                     }
                 }
-                on_group_message_create(gmsg);
+                bool isYou = false;
+                try {
+                    isYou = d.at(json::json_pointer("/mentions/0/is_you")).get<bool>();
+                }
+                catch (const json::exception& e) {
+                    isYou = false;
+                }
+                if (isYou) {
+                    gmsg.content = remove_all_mentions(gmsg.content);
+                    on_group_at_message_create(gmsg);
+                }
+                else {
+                    on_group_message_create(gmsg);
+                }
+                
             }
         } else if (op == 10) {
             json d = j["d"];
@@ -653,7 +689,6 @@ void MyClient::_handle_event(const std::string& event_json) {
             log("info", "Heartbeat interval: " + std::to_string(m_heartbeat_interval) + "ms");
             _send_identify();
         } //else if (op == 11) {
-        //    //����
         //    log("info", "Heartbeat ACK received");
         //}
     } catch (const std::exception& e) {
