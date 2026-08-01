@@ -13,11 +13,11 @@
 #include "http/websocket_client.hpp"
 #include "plugin_api.h"
 #include "message_queue.h"
+#include "intents.h"
 
-// 前向声明，避免循环包含
+
 class MainWindow;
 
-// 设置主窗口指针（用于插件日志回调）
 void SetMainWindowPointer(MainWindow* window);
 
 struct Config {
@@ -118,6 +118,8 @@ protected:
     
 private:
     bool _authenticate();
+    bool _refresh_token();
+    std::string _get_valid_token();
     bool _get_gateway_url();
     bool _connect_websocket();
     bool _reconnect();
@@ -142,6 +144,9 @@ private:
     std::string m_appid;
     std::string m_secret;
     std::string m_token;
+    std::mutex m_token_mutex;
+    std::chrono::steady_clock::time_point m_token_expiry;
+    std::atomic<bool> m_token_refreshing{false};
     std::string m_gateway_url;
     std::atomic<bool> m_running;
     std::atomic<bool> m_websocket_connected;
@@ -163,43 +168,4 @@ private:
     int m_worker_count;
     
     PluginManager m_plugin_manager;
-};
-
-class Intents {
-public:
-    bool guilds;
-    bool guild_members;
-    bool guild_messages;
-    bool guild_message_reactions;
-    bool direct_message;
-    bool open_forum_event;
-    bool audio_or_live_channel_member;
-    bool public_messages;
-    bool interaction;
-    bool message_audit;
-    bool forums;
-    bool audio_action;
-    bool public_guild_messages;
-
-    Intents() :
-        guilds(false), guild_members(false),
-        guild_messages(false), guild_message_reactions(false),
-        direct_message(false),
-        open_forum_event(false), audio_or_live_channel_member(false),
-        public_messages(false),
-        interaction(false), message_audit(false),
-        forums(false), audio_action(false),
-        public_guild_messages(false) {}
-
-    Intents(bool pm, bool dm) :
-        guilds(false), guild_members(false),
-        guild_messages(false), guild_message_reactions(false),
-        direct_message(dm),
-        open_forum_event(false), audio_or_live_channel_member(false),
-        public_messages(pm),
-        interaction(false), message_audit(false),
-        forums(false), audio_action(false),
-        public_guild_messages(false) {}
-
-    uint32_t to_bits() const;
 };

@@ -68,5 +68,8 @@
     <ClInclude Include="websocket\websocket.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="http\python_http_helper.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

@@ -2,6 +2,7 @@
 #include "MainWindow.h"
 #include "json.hpp"
 #include "http/python_http_helper.hpp"
+#include "intents.h"
 #include <iostream>
 #include <fstream>
 #include <regex>
@@ -90,6 +91,16 @@ static bool parse_headers_json(const char* headers_json, std::map<std::string, s
     }
 }
 
+// QQ Bot returns code 11244 (message "token not exist or expire") when the
+// access token is missing or has expired. Detecting this lets callers refresh
+// the token and retry the request instead of failing the send outright.
+static bool is_token_expired_response(const std::string& body) {
+    if (body.empty()) return false;
+    if (body.find("11244") != std::string::npos) return true;
+    if (body.find("token not exist") != std::string::npos) return true;
+    return false;
+}
+
 extern "C" const char* plugin_http_get_wrapper(const char* url, const char* headers_json) {
     static std::string result_str;
     if (!url || !*url) {
@@ -109,12 +120,20 @@ extern "C" const char* plugin_http_get_wrapper(const char* url, const char* head
     int status_code = 0;
     std::string body;
     std::string error_msg;
-    bool ok = client->Get(url, headers, status_code, body, error_msg);
+    std::map<std::string, std::string> resp_headers;
+    std::map<std::string, std::string> resp_cookies;
+    bool ok = client->Get(url, headers, status_code, body, error_msg, &resp_headers, &resp_cookies);
     json result;
     result["success"] = ok;
     result["status_code"] = status_code;
     result["body"] = body;
     result["error"] = error_msg;
+    json j_headers = json::object();
+    for (const auto& kv : resp_headers) j_headers[kv.first] = kv.second;
+    json j_cookies = json::object();
+    for (const auto& kv : resp_cookies) j_cookies[kv.first] = kv.second;
+    result["headers"] = j_headers;
+    result["cookies"] = j_cookies;
     result_str = result.dump();
     return result_str.c_str();
 }
@@ -139,12 +158,20 @@ extern "C" const char* plugin_http_post_wrapper(const char* url, const char* dat
     int status_code = 0;
     std::string body;
     std::string error_msg;
-    bool ok = client->Post(url, s_data, headers, status_code, body, error_msg);
+    std::map<std::string, std::string> resp_headers;
+    std::map<std::string, std::string> resp_cookies;
+    bool ok = client->Post(url, s_data, headers, status_code, body, error_msg, &resp_headers, &resp_cookies);
     json result;
     result["success"] = ok;
     result["status_code"] = status_code;
     result["body"] = body;
     result["error"] = error_msg;
+    json j_headers = json::object();
+    for (const auto& kv : resp_headers) j_headers[kv.first] = kv.second;
+    json j_cookies = json::object();
+    for (const auto& kv : resp_cookies) j_cookies[kv.first] = kv.second;
+    result["headers"] = j_headers;
+    result["cookies"] = j_cookies;
     result_str = result.dump();
     return result_str.c_str();
 }
@@ -280,12 +307,16 @@ bool MyClient::_authenticate() {
     }
     
     log("info", "Auth response: " + response.body);
-    
+
     std::string token;
+    int expires_in = 7200;
     try {
         json j = json::parse(response.body);
         if (j.contains("access_token")) {
             token = j["access_token"].get<std::string>();
+        }
+        if (j.contains("expires_in") && j["expires_in"].is_number()) {
+            expires_in = j["expires_in"].get<int>();
         }
     } catch (const std::exception& e) {
         log("error", std::string("Auth JSON parse error: ") + e.what());
@@ -294,17 +325,64 @@ bool MyClient::_authenticate() {
         log("error", "Failed to extract access_token");
         return false;
     }
-    
-    m_token = token;
-    log("success", "Authentication successful");
+
+    // Refresh proactively a little before the real expiry so concurrent sends
+    // never observe a stale token (which would surface as HTTP 11244).
+    const int kRefreshMarginSec = 300;
+    int effective = (expires_in > kRefreshMarginSec) ? (expires_in - kRefreshMarginSec) : expires_in;
+    {
+        std::lock_guard<std::mutex> lock(m_token_mutex);
+        m_token = token;
+        m_token_expiry = std::chrono::steady_clock::now() + std::chrono::seconds(effective);
+    }
+    log("success", "Authentication successful, token expires in " + std::to_string(expires_in) +
+                   "s (will refresh after " + std::to_string(effective) + "s)");
     return true;
+}
+
+bool MyClient::_refresh_token() {
+    // Serialize refreshes so only one thread performs the network call; other
+    // callers wait and then reuse the freshly obtained token.
+    bool expected = false;
+    if (!m_token_refreshing.compare_exchange_strong(expected, true)) {
+        while (m_token_refreshing.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        std::lock_guard<std::mutex> lock(m_token_mutex);
+        auto now = std::chrono::steady_clock::now();
+        return !m_token.empty() && now < m_token_expiry;
+    }
+
+    log("info", "Refreshing access token...");
+    bool ok = _authenticate();
+    m_token_refreshing.store(false);
+    if (ok) {
+        log("success", "Access token refreshed");
+    } else {
+        log("error", "Access token refresh failed");
+    }
+    return ok;
+}
+
+std::string MyClient::_get_valid_token() {
+    {
+        std::lock_guard<std::mutex> lock(m_token_mutex);
+        auto now = std::chrono::steady_clock::now();
+        if (!m_token.empty() && now < m_token_expiry) {
+            return m_token;
+        }
+    }
+    // Token missing or about to expire -> refresh before using it.
+    _refresh_token();
+    std::lock_guard<std::mutex> lock(m_token_mutex);
+    return m_token;
 }
 
 bool MyClient::_get_gateway_url() {
     log("info", "Getting gateway URL...");
-    
+
     RestClient::Request request;
-    request.headers["Authorization"] = "QQBot " + m_token;
+    request.headers["Authorization"] = "QQBot " + _get_valid_token();
     
     RestClient::Response response = RestClient::get("https://api.bot.qq.com/gateway/bot", &request);
     
@@ -361,7 +439,7 @@ void MyClient::_send_identify() {
 
     uint32_t intents = (1u << 25) | (1u << 12);
 
-    std::string json = R"({"op":2,"d":{"token":"QQBot )" + m_token +
+    std::string json = R"({"op":2,"d":{"token":"QQBot )" + _get_valid_token() +
         R"(","intents":)" + std::to_string(intents) +
         R"(,"properties":{"os":"windows","browser":"MiaoBot","device":"MiaoBot"}}})";
 
@@ -401,7 +479,7 @@ void MyClient::_send_heartbeat() {
                 if (!send_result) {
                     log("error", "Failed to send heartbeat");
                     m_websocket_connected = false;
-                    if (on_status) on_status("connecting", "ÐÄÌøÊ§°Ü,ÖØÁ¬ÖÐ...");
+                    if (on_status) on_status("connecting", "ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½,ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½...");
                     stop();
                     if (on_restart) on_restart();
                     return;
@@ -417,7 +495,7 @@ void MyClient::_send_heartbeat() {
         } else {
             if (m_running) {
                 log("warn", "WebSocket disconnected");
-                if (on_status) on_status("connecting", "ÐÄÌøÊ§°Ü,ÖØÁ¬ÖÐ...");
+                if (on_status) on_status("connecting", "ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½,ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½...");
                 stop();
                 if (on_restart) on_restart();
                 return;
@@ -575,7 +653,7 @@ void MyClient::_handle_event(const std::string& event_json) {
             log("info", "Heartbeat interval: " + std::to_string(m_heartbeat_interval) + "ms");
             _send_identify();
         } //else if (op == 11) {
-        //    //ÐÄÌø
+        //    //ï¿½ï¿½ï¿½ï¿½
         //    log("info", "Heartbeat ACK received");
         //}
     } catch (const std::exception& e) {
@@ -607,11 +685,8 @@ std::string MyClient::_build_msg_json(const std::string& content, const std::str
 }
 
 bool MyClient::_send_c2c_message(const std::string& openid, const std::string& content, const std::string& msg_id, int msg_type, const std::string& media) {
-    if (m_token.empty() || openid.empty()) return false;
+    if (openid.empty()) return false;
 
-    RestClient::Request request;
-    request.headers["Authorization"] = "QQBot " + m_token;
-    request.headers["Content-Type"] = "application/json";
     std::string url = "https://api.sgroup.qq.com/v2/users/" + openid + "/messages";
     std::string body = _build_msg_json(content, msg_id, msg_type, media);
 
@@ -620,78 +695,138 @@ bool MyClient::_send_c2c_message(const std::string& openid, const std::string& c
         if (c == '\n') log("info", "C2C body has raw \\n at pos " + std::to_string(i));
         if (c == '\r') log("info", "C2C body has raw \\r at pos " + std::to_string(i));
     }
-    RestClient::Response response = RestClient::post(url, "application/json", body, &request);
 
-    if (response.code == 0 || response.body.empty()) {
-        log("error", "Failed to send C2C message, code: " + std::to_string(response.code));
-        return false;
-    }
-    if (response.code < 200 || response.code >= 300) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        std::string token = _get_valid_token();
+        if (token.empty()) {
+            log("error", "No valid token for C2C message, msg_id=" + (msg_id.empty() ? "(empty)" : msg_id));
+            return false;
+        }
+
+        RestClient::Request request;
+        request.headers["Authorization"] = "QQBot " + token;
+        request.headers["Content-Type"] = "application/json";
+
+        RestClient::Response response = RestClient::post(url, "application/json", body, &request);
+
+        if (response.code >= 200 && response.code < 300) {
+            return true;
+        }
+
+        if (response.code == 0 || response.body.empty()) {
+            log("error", "Failed to send C2C message, code: " + std::to_string(response.code) +
+                         ", msg_id=" + (msg_id.empty() ? "(empty)" : msg_id));
+            return false;
+        }
+
+        if (attempt == 0 && is_token_expired_response(response.body)) {
+            log("warn", "C2C send hit token-expired (11244), refreshing and retrying. msg_id=" +
+                        (msg_id.empty() ? "(empty)" : msg_id));
+            _refresh_token();
+            continue;
+        }
+
         log("error", "C2C send failed: HTTP " + std::to_string(response.code) +
                      ", msg_id=" + (msg_id.empty() ? "(empty)" : msg_id) +
                      ", body=" + response.body);
         return false;
     }
-    return true;
+    return false;
 }
 
 bool MyClient::_send_group_message(const std::string& group_openid, const std::string& content, const std::string& msg_id, int msg_type, const std::string& media) {
-    if (m_token.empty() || group_openid.empty()) return false;
-
-    RestClient::Request request;
-    request.headers["Authorization"] = "QQBot " + m_token;
-    request.headers["Content-Type"] = "application/json";
+    if (group_openid.empty()) return false;
 
     std::string url = "https://api.sgroup.qq.com/v2/groups/" + group_openid + "/messages";
     std::string body = _build_msg_json(content, msg_id, msg_type, media);
 
-    RestClient::Response response = RestClient::post(url, "application/json", body, &request);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        std::string token = _get_valid_token();
+        if (token.empty()) {
+            log("error", "No valid token for group message, msg_id=" + (msg_id.empty() ? "(empty)" : msg_id));
+            return false;
+        }
 
-    if (response.code == 0 || response.body.empty()) {
-        log("error", "Failed to send group message, code: " + std::to_string(response.code));
-        return false;
-    }
-    if (response.code < 200 || response.code >= 300) {
+        RestClient::Request request;
+        request.headers["Authorization"] = "QQBot " + token;
+        request.headers["Content-Type"] = "application/json";
+
+        RestClient::Response response = RestClient::post(url, "application/json", body, &request);
+
+        if (response.code >= 200 && response.code < 300) {
+            return true;
+        }
+
+        if (response.code == 0 || response.body.empty()) {
+            log("error", "Failed to send group message, code: " + std::to_string(response.code) +
+                         ", msg_id=" + (msg_id.empty() ? "(empty)" : msg_id));
+            return false;
+        }
+
+        if (attempt == 0 && is_token_expired_response(response.body)) {
+            log("warn", "Group send hit token-expired (11244), refreshing and retrying. msg_id=" +
+                        (msg_id.empty() ? "(empty)" : msg_id));
+            _refresh_token();
+            continue;
+        }
+
         log("error", "Group send failed: HTTP " + std::to_string(response.code) +
                      ", msg_id=" + (msg_id.empty() ? "(empty)" : msg_id) +
                      ", body=" + response.body);
         return false;
     }
-    return true;
+    return false;
 }
 
 std::string MyClient::_post_c2c_file(const std::string& openid, const std::string& url, int file_type, bool srv_send_msg) {
-    if (m_token.empty() || openid.empty() || url.empty()) return "";
+    if (openid.empty() || url.empty()) return "";
 
     json j;
     j["file_type"] = file_type;
     j["url"] = url;
     j["srv_send_msg"] = srv_send_msg;
     std::string body = j.dump();
-
-    RestClient::Request request;
-    request.headers["Authorization"] = "QQBot " + m_token;
-    request.headers["Content-Type"] = "application/json";
 
     std::string api_url = "https://api.sgroup.qq.com/v2/users/" + openid + "/files";
     log("info", "Post C2C file: url=" + url + ", file_type=" + std::to_string(file_type));
-    RestClient::Response response = RestClient::post(api_url, "application/json", body, &request);
 
-    if (response.code == 0 || response.body.empty()) {
-        log("error", "Failed to post C2C file, code: " + std::to_string(response.code));
-        return "";
-    }
-    if (response.code < 200 || response.code >= 300) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        std::string token = _get_valid_token();
+        if (token.empty()) {
+            log("error", "No valid token for C2C file post");
+            return "";
+        }
+
+        RestClient::Request request;
+        request.headers["Authorization"] = "QQBot " + token;
+        request.headers["Content-Type"] = "application/json";
+
+        RestClient::Response response = RestClient::post(api_url, "application/json", body, &request);
+
+        if (response.code >= 200 && response.code < 300) {
+            log("info", "C2C file upload response: " + response.body);
+            return response.body;
+        }
+
+        if (response.code == 0 || response.body.empty()) {
+            log("error", "Failed to post C2C file, code: " + std::to_string(response.code));
+            return "";
+        }
+
+        if (attempt == 0 && is_token_expired_response(response.body)) {
+            log("warn", "C2C file post hit token-expired (11244), refreshing and retrying");
+            _refresh_token();
+            continue;
+        }
+
         log("error", "C2C file upload failed: HTTP " + std::to_string(response.code) + ", body=" + response.body);
         return "";
     }
-
-    log("info", "C2C file upload response: " + response.body);
-    return response.body;
+    return "";
 }
 
 std::string MyClient::_post_group_file(const std::string& group_openid, const std::string& url, int file_type, bool srv_send_msg) {
-    if (m_token.empty() || group_openid.empty() || url.empty()) return "";
+    if (group_openid.empty() || url.empty()) return "";
 
     json j;
     j["file_type"] = file_type;
@@ -699,29 +834,46 @@ std::string MyClient::_post_group_file(const std::string& group_openid, const st
     j["srv_send_msg"] = srv_send_msg;
     std::string body = j.dump();
 
-    RestClient::Request request;
-    request.headers["Authorization"] = "QQBot " + m_token;
-    request.headers["Content-Type"] = "application/json";
-
     std::string api_url = "https://api.sgroup.qq.com/v2/groups/" + group_openid + "/files";
-    RestClient::Response response = RestClient::post(api_url, "application/json", body, &request);
 
-    if (response.code == 0 || response.body.empty()) {
-        log("error", "Failed to post group file, code: " + std::to_string(response.code));
-        return "";
-    }
-    if (response.code < 200 || response.code >= 300) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        std::string token = _get_valid_token();
+        if (token.empty()) {
+            log("error", "No valid token for group file post");
+            return "";
+        }
+
+        RestClient::Request request;
+        request.headers["Authorization"] = "QQBot " + token;
+        request.headers["Content-Type"] = "application/json";
+
+        RestClient::Response response = RestClient::post(api_url, "application/json", body, &request);
+
+        if (response.code >= 200 && response.code < 300) {
+            log("info", "Group file upload response: " + response.body);
+            return response.body;
+        }
+
+        if (response.code == 0 || response.body.empty()) {
+            log("error", "Failed to post group file, code: " + std::to_string(response.code));
+            return "";
+        }
+
+        if (attempt == 0 && is_token_expired_response(response.body)) {
+            log("warn", "Group file post hit token-expired (11244), refreshing and retrying");
+            _refresh_token();
+            continue;
+        }
+
         log("error", "Group file upload failed: HTTP " + std::to_string(response.code) + ", body=" + response.body);
         return "";
     }
-
-    log("info", "Group file upload response: " + response.body);
-    return response.body;
+    return "";
 }
 
 void MyClient::on_ready() {
     log("success", "Robot on_ready!");
-    if (on_status) on_status("online", "ÔÚÏß");
+    if (on_status) on_status("online", "ï¿½ï¿½ï¿½ï¿½");
     if (on_info) on_info("sessionId", m_session_id);
     if (on_info && !m_nickname.empty()) on_info("nickname", m_nickname);
 }
@@ -1031,7 +1183,7 @@ void PluginManager::handle_message(const Message& message, bool is_group) {
             }
         }
     }
-    //ÓÅÏÈ¼¶´ÓÐ¡µ½´óÅÅÐò
+    //ï¿½ï¿½ï¿½È¼ï¿½ï¿½ï¿½Ð¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     std::sort(plugins_copy.begin(), plugins_copy.end(), [](const PluginInstance& a, const PluginInstance& b) {
         return a.priority < b.priority;
     });
