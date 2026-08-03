@@ -24,7 +24,7 @@ using namespace winnet;
 namespace RestClient
 {
 	 struct Response {
-		int code;
+		int code = 0;
 		std::string		body;
 		HeaderFields	headers;
 		std::string		cookies;
@@ -40,7 +40,7 @@ namespace RestClient
 	} ;
 
 	 struct Request {
-		int timeout;
+		int timeout = 0;
 		bool followRedirects = true;
 		HeaderFields headers;
 		struct {

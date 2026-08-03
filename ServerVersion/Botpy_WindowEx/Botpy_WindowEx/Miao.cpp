@@ -479,7 +479,7 @@ void MyClient::_send_heartbeat() {
                 if (!send_result) {
                     log("error", "Failed to send heartbeat");
                     m_websocket_connected = false;
-                    if (on_status) on_status("connecting", "ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½,ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½...");
+                    if (on_status) on_status("connecting", (char*)u8"ÕıÔÚÖØÁ¬...");
                     stop();
                     if (on_restart) on_restart();
                     return;
@@ -495,7 +495,7 @@ void MyClient::_send_heartbeat() {
         } else {
             if (m_running) {
                 log("warn", "WebSocket disconnected");
-                if (on_status) on_status("connecting", "ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½,ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½...");
+                if (on_status) on_status("connecting", (char*)u8"Á¬½ÓÊ§°Ü£¬ÕıÔÚÖØÁ¬...");
                 stop();
                 if (on_restart) on_restart();
                 return;
@@ -731,7 +731,7 @@ bool MyClient::_send_c2c_message(const std::string& openid, const std::string& c
         if (c == '\r') log("info", "C2C body has raw \\r at pos " + std::to_string(i));
     }
 
-    for (int attempt = 0; attempt < 2; ++attempt) {
+    for (int attempt = 0; attempt < 3; ++attempt) {
         std::string token = _get_valid_token();
         if (token.empty()) {
             log("error", "No valid token for C2C message, msg_id=" + (msg_id.empty() ? "(empty)" : msg_id));
@@ -739,6 +739,7 @@ bool MyClient::_send_c2c_message(const std::string& openid, const std::string& c
         }
 
         RestClient::Request request;
+        request.timeout = 30000;
         request.headers["Authorization"] = "QQBot " + token;
         request.headers["Content-Type"] = "application/json";
 
@@ -749,6 +750,13 @@ bool MyClient::_send_c2c_message(const std::string& openid, const std::string& c
         }
 
         if (response.code == 0 || response.body.empty()) {
+            if (attempt < 2) {
+                log("warn", "C2C send network failure (code=" + std::to_string(response.code) +
+                             "), retry " + std::to_string(attempt + 1) + "/2, msg_id=" +
+                             (msg_id.empty() ? "(empty)" : msg_id));
+                Sleep(2000);
+                continue;
+            }
             log("error", "Failed to send C2C message, code: " + std::to_string(response.code) +
                          ", msg_id=" + (msg_id.empty() ? "(empty)" : msg_id));
             return false;
@@ -775,7 +783,7 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
     std::string url = "https://api.sgroup.qq.com/v2/groups/" + group_openid + "/messages";
     std::string body = _build_msg_json(content, msg_id, msg_type, media);
 
-    for (int attempt = 0; attempt < 2; ++attempt) {
+    for (int attempt = 0; attempt < 3; ++attempt) {
         std::string token = _get_valid_token();
         if (token.empty()) {
             log("error", "No valid token for group message, msg_id=" + (msg_id.empty() ? "(empty)" : msg_id));
@@ -783,6 +791,7 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
         }
 
         RestClient::Request request;
+        request.timeout = 30000;
         request.headers["Authorization"] = "QQBot " + token;
         request.headers["Content-Type"] = "application/json";
 
@@ -793,6 +802,13 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
         }
 
         if (response.code == 0 || response.body.empty()) {
+            if (attempt < 2) {
+                log("warn", "Group send network failure (code=" + std::to_string(response.code) +
+                             "), retry " + std::to_string(attempt + 1) + "/2, msg_id=" +
+                             (msg_id.empty() ? "(empty)" : msg_id));
+                Sleep(2000);
+                continue;
+            }
             log("error", "Failed to send group message, code: " + std::to_string(response.code) +
                          ", msg_id=" + (msg_id.empty() ? "(empty)" : msg_id));
             return false;
@@ -823,9 +839,8 @@ std::string MyClient::_post_c2c_file(const std::string& openid, const std::strin
     std::string body = j.dump();
 
     std::string api_url = "https://api.sgroup.qq.com/v2/users/" + openid + "/files";
-    log("info", "Post C2C file: url=" + url + ", file_type=" + std::to_string(file_type));
 
-    for (int attempt = 0; attempt < 2; ++attempt) {
+    for (int attempt = 0; attempt < 3; ++attempt) {
         std::string token = _get_valid_token();
         if (token.empty()) {
             log("error", "No valid token for C2C file post");
@@ -833,18 +848,25 @@ std::string MyClient::_post_c2c_file(const std::string& openid, const std::strin
         }
 
         RestClient::Request request;
+        request.timeout = 60000;
         request.headers["Authorization"] = "QQBot " + token;
         request.headers["Content-Type"] = "application/json";
 
         RestClient::Response response = RestClient::post(api_url, "application/json", body, &request);
 
         if (response.code >= 200 && response.code < 300) {
-            log("info", "C2C file upload response: " + response.body);
             return response.body;
         }
 
         if (response.code == 0 || response.body.empty()) {
-            log("error", "Failed to post C2C file, code: " + std::to_string(response.code));
+            if (attempt < 2) {
+                log("warn", "C2C file post network failure (code=" + std::to_string(response.code) +
+                             "), retry " + std::to_string(attempt + 1) + "/2...");
+                Sleep(2000);
+                continue;
+            }
+            log("error", "Failed to post C2C file, code: " + std::to_string(response.code) +
+                         ", url=" + url);
             return "";
         }
 
@@ -871,7 +893,7 @@ std::string MyClient::_post_group_file(const std::string& group_openid, const st
 
     std::string api_url = "https://api.sgroup.qq.com/v2/groups/" + group_openid + "/files";
 
-    for (int attempt = 0; attempt < 2; ++attempt) {
+    for (int attempt = 0; attempt < 3; ++attempt) {
         std::string token = _get_valid_token();
         if (token.empty()) {
             log("error", "No valid token for group file post");
@@ -879,18 +901,28 @@ std::string MyClient::_post_group_file(const std::string& group_openid, const st
         }
 
         RestClient::Request request;
+        request.timeout = 60000;
         request.headers["Authorization"] = "QQBot " + token;
         request.headers["Content-Type"] = "application/json";
 
         RestClient::Response response = RestClient::post(api_url, "application/json", body, &request);
 
         if (response.code >= 200 && response.code < 300) {
-            log("info", "Group file upload response: " + response.body);
             return response.body;
         }
 
         if (response.code == 0 || response.body.empty()) {
-            log("error", "Failed to post group file, code: " + std::to_string(response.code));
+            // Network-level failure (request never completed). Retry with a
+            // short delay so transient connectivity issues don't cascade into
+            // an "invalid file_info" error on the subsequent message send.
+            if (attempt < 2) {
+                log("warn", "Group file post network failure (code=" + std::to_string(response.code) +
+                             "), retry " + std::to_string(attempt + 1) + "/2...");
+                Sleep(2000);
+                continue;
+            }
+            log("error", "Failed to post group file, code: " + std::to_string(response.code) +
+                         ", url=" + url);
             return "";
         }
 
@@ -908,7 +940,7 @@ std::string MyClient::_post_group_file(const std::string& group_openid, const st
 
 void MyClient::on_ready() {
     log("success", "Robot on_ready!");
-    if (on_status) on_status("online", "ï¿½ï¿½ï¿½ï¿½");
+    if (on_status) on_status("online", "????");
     if (on_info) on_info("sessionId", m_session_id);
     if (on_info && !m_nickname.empty()) on_info("nickname", m_nickname);
 }
@@ -1218,7 +1250,7 @@ void PluginManager::handle_message(const Message& message, bool is_group) {
             }
         }
     }
-    //ï¿½ï¿½ï¿½È¼ï¿½ï¿½ï¿½Ğ¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+    //???????§³????????
     std::sort(plugins_copy.begin(), plugins_copy.end(), [](const PluginInstance& a, const PluginInstance& b) {
         return a.priority < b.priority;
     });
