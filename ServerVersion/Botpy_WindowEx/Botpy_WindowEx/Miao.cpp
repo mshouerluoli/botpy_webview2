@@ -12,6 +12,7 @@
 #include <locale>
 #include <memory>
 #include <mutex>
+#include <iomanip>
 #include <windows.h>
 
 using json = nlohmann::json;
@@ -855,8 +856,48 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
     return false;
 }
 
+// FNV-1a 64-bit hash ¡ª no external deps, fixed-size output, fast enough for
+// URLs of any length. Produces a 16-char lowercase hex digest which keeps
+// cache-key size bounded regardless of input URL length (important for
+// signed URLs with long query strings).
+static std::string fnv1a_64_hex(const std::string& s) {
+    uint64_t h = 1469598103934665603ULL;
+    for (char c : s) {
+        h ^= static_cast<uint64_t>(static_cast<unsigned char>(c));
+        h *= 1099511628211ULL;
+    }
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0') << std::setw(16) << h;
+    return oss.str();
+}
+
+// Sweep the cache and erase every entry whose expiry has passed. Called
+// probabilistically from cache writes so stale entries that are never
+// re-looked-up do not accumulate forever (e.g. a bot running for months
+// would otherwise leak entries nobody touches anymore).
+// Caller MUST hold m_file_cache_mutex.  This is a private static member so
+// it can access the private nested type MyClient::CachedFileInfo.
+size_t MyClient::_file_cache_purge_expired_locked(
+    std::unordered_map<std::string, CachedFileInfo>& cache) {
+    auto now = std::chrono::steady_clock::now();
+    size_t erased = 0;
+    for (auto it = cache.begin(); it != cache.end(); ) {
+        if (now >= it->second.expiry) {
+            it = cache.erase(it);
+            ++erased;
+        } else {
+            ++it;
+        }
+    }
+    return erased;
+}
+
 std::string MyClient::_file_cache_get(const std::string& target_id, const std::string& url, int file_type) {
-    std::string key = target_id + "\x01" + url + "\x01" + std::to_string(file_type);
+    // Cache key = target_id + 64-bit URL hash + file_type. target_id and
+    // file_type stay plaintext so a URL hash collision between targets or
+    // types cannot produce a spurious cache hit. URL is hashed so even a
+    // multi-KB signed URL produces a fixed 16-char digest.
+    std::string key = target_id + "\x01" + fnv1a_64_hex(url) + "\x01" + std::to_string(file_type);
     std::lock_guard<std::mutex> lock(m_file_cache_mutex);
     auto it = m_file_cache.find(key);
     if (it == m_file_cache.end()) return "";
@@ -869,7 +910,7 @@ std::string MyClient::_file_cache_get(const std::string& target_id, const std::s
 
 void MyClient::_file_cache_put(const std::string& target_id, const std::string& url, int file_type,
                                 const std::string& response_body, int ttl) {
-    std::string key = target_id + "\x01" + url + "\x01" + std::to_string(file_type);
+    std::string key = target_id + "\x01" + fnv1a_64_hex(url) + "\x01" + std::to_string(file_type);
     // Subtract a 5-minute safety margin so we never use a nearly-expired file_info.
     int effective_ttl = (ttl > 300) ? ttl - 300 : ttl;
     // ttl == 0 means "long-term usable"; default the cache to 24 hours.
@@ -877,6 +918,15 @@ void MyClient::_file_cache_put(const std::string& target_id, const std::string& 
     std::lock_guard<std::mutex> lock(m_file_cache_mutex);
     m_file_cache[key] = {response_body,
                          std::chrono::steady_clock::now() + std::chrono::seconds(effective_ttl)};
+
+    // Probabilistic full sweep (~1 in 64 writes). Average cost per write is
+    // O(n/64) = amortised O(1), and it guarantees that dead entries are
+    // reclaimed even if nobody ever looks them up again. A cheap per-thread
+    // counter avoids rand() overhead; "& 0x3F" == "% 64" (power-of-two mask).
+    static thread_local int sweep_counter = 0;
+    if ((++sweep_counter & 0x3F) == 0) {
+        MyClient::_file_cache_purge_expired_locked(m_file_cache);
+    }
 }
 
 std::string MyClient::_post_c2c_file(const std::string& openid, const std::string& url, int file_type, bool srv_send_msg) {
@@ -890,7 +940,6 @@ std::string MyClient::_post_c2c_file(const std::string& openid, const std::strin
         }
     }
 
-    log("info", "Post C2C file: url=" + url + ", file_type=" + std::to_string(file_type));
 
     json j;
     j["file_type"] = file_type;
@@ -966,8 +1015,6 @@ std::string MyClient::_post_group_file(const std::string& group_openid, const st
             return cached;
         }
     }
-
-    log("info", "Post group file: url=" + url + ", file_type=" + std::to_string(file_type));
 
     json j;
     j["file_type"] = file_type;

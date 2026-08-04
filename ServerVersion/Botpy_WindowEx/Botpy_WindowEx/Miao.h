@@ -151,6 +151,8 @@ private:
     std::string _file_cache_get(const std::string& target_id, const std::string& url, int file_type);
     void _file_cache_put(const std::string& target_id, const std::string& url, int file_type,
                          const std::string& response_body, int ttl);
+    static size_t _file_cache_purge_expired_locked(
+        std::unordered_map<std::string, CachedFileInfo>& cache);
 
     void log(const std::string& level, const std::string& msg);
 
