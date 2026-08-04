@@ -8,10 +8,6 @@
 
 
 using json = nlohmann::json;
-
-// Unified context: holds function pointers (via PluginInitParams)
-// plus owned string copies for appid / data_path, whose source
-// pointers may be transient after plugin_init returns.
 struct PluginContext {
     PluginInitParams api;
     std::string appid;
@@ -19,8 +15,8 @@ struct PluginContext {
 };
 static PluginContext g_ctx = {};
 
-// Parse the unified HTTP JSON response returned by the host
-// Format: {"success":bool, "status_code":int, "body":"...", "error":"..."}
+
+//{"success":bool, "status_code":int, "body":"...", "error":"..."}
 static bool parse_http_response(const char* resp, bool& success, int& status_code,
     std::string& body, std::string& error)
 {
@@ -48,14 +44,11 @@ static bool parse_http_response(const char* resp, bool& success, int& status_cod
 extern "C" __declspec(dllexport) int plugin_init(const PluginInitParams* params) {
     if (!params) return -1;
 
-    // Copy function pointers directly from params struct
     g_ctx.api = *params;
 
-    // Take ownership of string data (original pointers may be transient)
     if (params->appid) g_ctx.appid = params->appid;
     if (params->data_path) g_ctx.data_dir = params->data_path;
 
-    // Re-point struct pointers to our owned copies
     g_ctx.api.appid = g_ctx.appid.c_str();
     g_ctx.api.data_path = g_ctx.data_dir.c_str();
 
@@ -123,7 +116,7 @@ void sendGroupImageMessage(const PluginMessage* msg, const char* imageUrl, const
     }
 }
 
-// Example: trigger HTTP GET when user sends "/httpget"
+
 static void demo_http_get(const PluginMessage* msg) {
     if (!g_ctx.api.http_get_func) {
         send_msg(msg, "[SDK] HTTP GET API is not available. Please update the host program.");
@@ -133,7 +126,6 @@ static void demo_http_get(const PluginMessage* msg) {
 
     const char* url = "https://httpbin.org/get";
 
-    // Build headers JSON using nlohmann/json (type-safe, escapes automatically)
     json headers = {
         {"User-Agent", "BotpySDK/1.0"},
         {"X-Custom-Header", "hello"}
@@ -172,7 +164,7 @@ static void demo_http_get(const PluginMessage* msg) {
     }
 }
 
-// Example: trigger HTTP POST when user sends "/httppost"
+
 static void demo_http_post(const PluginMessage* msg) {
     if (!g_ctx.api.http_post_func) {
         send_msg(msg, "[SDK] HTTP POST API is not available. Please update the host program.");
@@ -182,7 +174,6 @@ static void demo_http_post(const PluginMessage* msg) {
 
     const char* url = "https://httpbin.org/post";
 
-    // Build POST body and headers using nlohmann/json
     json post_data = {
         {"name", "BotpySDK"},
         {"type", "plugin"}
@@ -244,7 +235,6 @@ extern "C" __declspec(dllexport) int plugin_handle_message(const PluginMessage* 
 
     //}
 
-    // HTTP API command triggers
     if (_strnicmp(content, "/httpget", 8) == 0) {
         demo_http_get(msg);
     } else if (_strnicmp(content, "/httppost", 9) == 0) {

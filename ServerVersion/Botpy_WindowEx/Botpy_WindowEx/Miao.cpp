@@ -300,7 +300,10 @@ MyClient::~MyClient() {
 bool MyClient::_authenticate() {
     log("info", "Authenticating with appid: " + m_appid);
     
-    std::string body = R"({"appId":")" + m_appid + R"(","clientSecret":")" + m_secret + R"("})";
+    json body_j;
+    body_j["appId"] = m_appid;
+    body_j["clientSecret"] = m_secret;
+    std::string body = body_j.dump();
     log("info", "Auth request body: " + body);
     RestClient::Response response = RestClient::post("https://api.bot.qq.com/app/getAppAccessToken", "application/json", body);
     
@@ -450,9 +453,14 @@ void MyClient::_send_identify() {
 
     uint32_t intents = (1u << 25) | (1u << 12);
 
-    std::string json = R"({"op":2,"d":{"token":"QQBot )" + _get_valid_token() +
-        R"(","intents":)" + std::to_string(intents) +
-        R"(,"properties":{"os":"windows","browser":"MiaoBot","device":"MiaoBot"}}})";
+    json id_j;
+    id_j["op"] = 2;
+    id_j["d"]["token"] = "QQBot " + _get_valid_token();
+    id_j["d"]["intents"] = intents;
+    id_j["d"]["properties"]["os"] = "windows";
+    id_j["d"]["properties"]["browser"] = "MiaoBot";
+    id_j["d"]["properties"]["device"] = "MiaoBot";
+    std::string id_payload = id_j.dump();
 
     bool send_result;
     {
@@ -460,7 +468,7 @@ void MyClient::_send_identify() {
         if (!m_websocket) {
             send_result = false;
         } else {
-            send_result = m_websocket->send(json);
+            send_result = m_websocket->send(id_payload);
         }
     }
 
@@ -475,7 +483,10 @@ void MyClient::_send_heartbeat() {
     while (m_running) {
         if (m_websocket_connected && m_websocket) {
             if (m_heartbeat_interval > 0) {
-                std::string json = R"({"op":1,"d":)" + std::to_string(m_sequence) + R"(})";
+                json hb_j;
+                hb_j["op"] = 1;
+                hb_j["d"] = m_sequence;
+                std::string hb_payload = hb_j.dump();
 
                 bool send_result;
                 {
@@ -483,7 +494,7 @@ void MyClient::_send_heartbeat() {
                     if (!m_websocket) {
                         send_result = false;
                     } else {
-                        send_result = m_websocket->send(json);
+                        send_result = m_websocket->send(hb_payload);
                     }
                 }
 

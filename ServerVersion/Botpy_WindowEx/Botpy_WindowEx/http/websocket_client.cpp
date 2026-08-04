@@ -156,6 +156,7 @@ bool WebSocketClient::send(const std::string& message) {
 
 void WebSocketClient::_listener() {
     char buffer[8192];
+    m_fragment_buffer.clear();
 
     while (m_running && m_ws) {
         DWORD bytesReceived = 0;
@@ -166,23 +167,41 @@ void WebSocketClient::_listener() {
         if (err == ERROR_SUCCESS) {
             if (bufferType == WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE ||
                 bufferType == WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE) {
-                // Fragment; keep accumulating (simple impl: just pass through fragment)
-                if (bytesReceived > 0 && m_message_handler) {
-                    std::string payload(buffer, bytesReceived);
-                    m_message_handler(payload);
+                // Accumulate fragment into buffer; final frame will fire the handler.
+                if (bytesReceived > 0) {
+                    m_fragment_buffer.append(buffer, bytesReceived);
                 }
             } else if (bufferType == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE) {
-                if (bytesReceived > 0) {
-                    buffer[bytesReceived] = '\0';
-                    std::string payload(buffer, bytesReceived);
+                if (bytesReceived > 0 || !m_fragment_buffer.empty()) {
+                    std::string payload;
+                    if (!m_fragment_buffer.empty()) {
+                        payload.reserve(m_fragment_buffer.size() + bytesReceived);
+                        payload.swap(m_fragment_buffer);
+                        m_fragment_buffer.clear();
+                        if (bytesReceived > 0) {
+                            payload.append(buffer, bytesReceived);
+                        }
+                    } else {
+                        payload.assign(buffer, bytesReceived);
+                    }
 
                     if (m_message_handler) {
                         m_message_handler(payload);
                     }
                 }
             } else if (bufferType == WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE) {
-                if (bytesReceived > 0) {
-                    std::string payload(buffer, bytesReceived);
+                if (bytesReceived > 0 || !m_fragment_buffer.empty()) {
+                    std::string payload;
+                    if (!m_fragment_buffer.empty()) {
+                        payload.reserve(m_fragment_buffer.size() + bytesReceived);
+                        payload.swap(m_fragment_buffer);
+                        m_fragment_buffer.clear();
+                        if (bytesReceived > 0) {
+                            payload.append(buffer, bytesReceived);
+                        }
+                    } else {
+                        payload.assign(buffer, bytesReceived);
+                    }
                     if (m_message_handler) {
                         m_message_handler(payload);
                     }
@@ -195,5 +214,6 @@ void WebSocketClient::_listener() {
         }
     }
 
+    m_fragment_buffer.clear();
     m_connected = false;
 }

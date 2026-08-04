@@ -40,4 +40,5 @@ private:
     std::mutex m_mutex;
 
     MessageHandler m_message_handler;
+    std::string m_fragment_buffer;
 };
