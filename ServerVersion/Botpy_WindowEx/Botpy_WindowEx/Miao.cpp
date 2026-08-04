@@ -101,6 +101,16 @@ static bool is_token_expired_response(const std::string& body) {
     return false;
 }
 
+// QQ Bot returns code 50015014 ("系统繁忙，请稍后重试" / "system busy, please
+// retry later") under transient server-side load. These responses are safe to
+// retry after a short back-off.
+static bool is_server_busy_response(const std::string& body) {
+    if (body.empty()) return false;
+    if (body.find("50015014") != std::string::npos) return true;
+    if (body.find("系统繁忙") != std::string::npos) return true;
+    return false;
+}
+
 extern "C" const char* plugin_http_get_wrapper(const char* url, const char* headers_json) {
     static std::string result_str;
     if (!url || !*url) {
@@ -769,6 +779,14 @@ bool MyClient::_send_c2c_message(const std::string& openid, const std::string& c
             continue;
         }
 
+        if (is_server_busy_response(response.body) && attempt < 2) {
+            log("warn", "C2C send server-busy (HTTP " + std::to_string(response.code) +
+                         "), retry " + std::to_string(attempt + 1) + "/2, msg_id=" +
+                         (msg_id.empty() ? "(empty)" : msg_id));
+            Sleep(3000);
+            continue;
+        }
+
         log("error", "C2C send failed: HTTP " + std::to_string(response.code) +
                      ", msg_id=" + (msg_id.empty() ? "(empty)" : msg_id) +
                      ", body=" + response.body);
@@ -821,6 +839,14 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
             continue;
         }
 
+        if (is_server_busy_response(response.body) && attempt < 2) {
+            log("warn", "Group send server-busy (HTTP " + std::to_string(response.code) +
+                         "), retry " + std::to_string(attempt + 1) + "/2, msg_id=" +
+                         (msg_id.empty() ? "(empty)" : msg_id));
+            Sleep(3000);
+            continue;
+        }
+
         log("error", "Group send failed: HTTP " + std::to_string(response.code) +
                      ", msg_id=" + (msg_id.empty() ? "(empty)" : msg_id) +
                      ", body=" + response.body);
@@ -829,8 +855,42 @@ bool MyClient::_send_group_message(const std::string& group_openid, const std::s
     return false;
 }
 
+std::string MyClient::_file_cache_get(const std::string& target_id, const std::string& url, int file_type) {
+    std::string key = target_id + "\x01" + url + "\x01" + std::to_string(file_type);
+    std::lock_guard<std::mutex> lock(m_file_cache_mutex);
+    auto it = m_file_cache.find(key);
+    if (it == m_file_cache.end()) return "";
+    if (std::chrono::steady_clock::now() >= it->second.expiry) {
+        m_file_cache.erase(it);
+        return "";
+    }
+    return it->second.response_body;
+}
+
+void MyClient::_file_cache_put(const std::string& target_id, const std::string& url, int file_type,
+                                const std::string& response_body, int ttl) {
+    std::string key = target_id + "\x01" + url + "\x01" + std::to_string(file_type);
+    // Subtract a 5-minute safety margin so we never use a nearly-expired file_info.
+    int effective_ttl = (ttl > 300) ? ttl - 300 : ttl;
+    // ttl == 0 means "long-term usable"; default the cache to 24 hours.
+    if (effective_ttl <= 0) effective_ttl = 86400;
+    std::lock_guard<std::mutex> lock(m_file_cache_mutex);
+    m_file_cache[key] = {response_body,
+                         std::chrono::steady_clock::now() + std::chrono::seconds(effective_ttl)};
+}
+
 std::string MyClient::_post_c2c_file(const std::string& openid, const std::string& url, int file_type, bool srv_send_msg) {
     if (openid.empty() || url.empty()) return "";
+
+    // Return cached file_info if we already uploaded this file recently.
+    if (!srv_send_msg) {
+        std::string cached = _file_cache_get(openid, url, file_type);
+        if (!cached.empty()) {
+            return cached;
+        }
+    }
+
+    log("info", "Post C2C file: url=" + url + ", file_type=" + std::to_string(file_type));
 
     json j;
     j["file_type"] = file_type;
@@ -855,6 +915,13 @@ std::string MyClient::_post_c2c_file(const std::string& openid, const std::strin
         RestClient::Response response = RestClient::post(api_url, "application/json", body, &request);
 
         if (response.code >= 200 && response.code < 300) {
+            if (!srv_send_msg) {
+                try {
+                    json resp_json = json::parse(response.body);
+                    int ttl = resp_json.value("ttl", 86400);
+                    _file_cache_put(openid, url, file_type, response.body, ttl);
+                } catch (...) {}
+            }
             return response.body;
         }
 
@@ -876,6 +943,13 @@ std::string MyClient::_post_c2c_file(const std::string& openid, const std::strin
             continue;
         }
 
+        if (is_server_busy_response(response.body) && attempt < 2) {
+            log("warn", "C2C file post server-busy (HTTP " + std::to_string(response.code) +
+                         "), retry " + std::to_string(attempt + 1) + "/2...");
+            Sleep(3000);
+            continue;
+        }
+
         log("error", "C2C file upload failed: HTTP " + std::to_string(response.code) + ", body=" + response.body);
         return "";
     }
@@ -884,6 +958,16 @@ std::string MyClient::_post_c2c_file(const std::string& openid, const std::strin
 
 std::string MyClient::_post_group_file(const std::string& group_openid, const std::string& url, int file_type, bool srv_send_msg) {
     if (group_openid.empty() || url.empty()) return "";
+
+    // Return cached file_info if we already uploaded this file recently.
+    if (!srv_send_msg) {
+        std::string cached = _file_cache_get(group_openid, url, file_type);
+        if (!cached.empty()) {
+            return cached;
+        }
+    }
+
+    log("info", "Post group file: url=" + url + ", file_type=" + std::to_string(file_type));
 
     json j;
     j["file_type"] = file_type;
@@ -908,6 +992,13 @@ std::string MyClient::_post_group_file(const std::string& group_openid, const st
         RestClient::Response response = RestClient::post(api_url, "application/json", body, &request);
 
         if (response.code >= 200 && response.code < 300) {
+            if (!srv_send_msg) {
+                try {
+                    json resp_json = json::parse(response.body);
+                    int ttl = resp_json.value("ttl", 86400);
+                    _file_cache_put(group_openid, url, file_type, response.body, ttl);
+                } catch (...) {}
+            }
             return response.body;
         }
 
@@ -929,6 +1020,13 @@ std::string MyClient::_post_group_file(const std::string& group_openid, const st
         if (attempt == 0 && is_token_expired_response(response.body)) {
             log("warn", "Group file post hit token-expired (11244), refreshing and retrying");
             _refresh_token();
+            continue;
+        }
+
+        if (is_server_busy_response(response.body) && attempt < 2) {
+            log("warn", "Group file post server-busy (HTTP " + std::to_string(response.code) +
+                         "), retry " + std::to_string(attempt + 1) + "/2...");
+            Sleep(3000);
             continue;
         }
 

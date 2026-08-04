@@ -8,6 +8,7 @@
 #include <functional>
 #include <chrono>
 #include <vector>
+#include <unordered_map>
 #include <windows.h>
 
 #include "http/websocket_client.hpp"
@@ -138,7 +139,19 @@ private:
     std::string _post_c2c_file(const std::string& openid, const std::string& url, int file_type, bool srv_send_msg = false);
     std::string _post_group_file(const std::string& group_openid, const std::string& url, int file_type, bool srv_send_msg = false);
     std::string _build_msg_json(const std::string& content, const std::string& msg_id = "", int msg_type = 0, const std::string& media = "");
-    
+
+    // File upload response cache to avoid re-uploading the same file within
+    // the TTL window returned by QQ's API (typically 86400s = 24h).
+    struct CachedFileInfo {
+        std::string response_body;
+        std::chrono::steady_clock::time_point expiry;
+    };
+    std::mutex m_file_cache_mutex;
+    std::unordered_map<std::string, CachedFileInfo> m_file_cache;
+    std::string _file_cache_get(const std::string& target_id, const std::string& url, int file_type);
+    void _file_cache_put(const std::string& target_id, const std::string& url, int file_type,
+                         const std::string& response_body, int ttl);
+
     void log(const std::string& level, const std::string& msg);
 
     std::string m_appid;
